@@ -32,6 +32,7 @@ texte minimal à la place de XML-RPC.
 | `src/daemon/ring.zig` | `Ring` : historique circulaire de la sortie brute. Testé unitairement. |
 | `src/daemon/output.zig` | Chemin de la sortie : anneau, fichier de log, abonnés ; notes du démon (`[zpawn] …`). |
 | `src/daemon/control.zig` | Cycle de vie : `forkpty` + `exec`, arrêt, collecte des fins de processus, minuteries de relance, **dépendances** (`launch`, `resolveWaiting`). |
+| `src/daemon/health.zig` | Commandes de santé : lance `sh -c <health>` toutes les `interval` secondes jusqu'au premier succès, tue un essai trop lent, abandonne après `retries` échecs. |
 | `src/daemon/commands.zig` | Les requêtes des clients : `add` (c'est `up`), `start`/`stop`/`restart`/`rm`, `ls`, `logs`, `down`. |
 | `src/daemon/server.zig` | Connexions : accepter, lire les requêtes, vider les sorties, balayer les connexions mortes. |
 | `src/daemon/util.zig` | Petits utilitaires : recherche par nom, validation, durées, listes de chaînes, création/libération d'un `Proc`. |
@@ -93,7 +94,7 @@ vrai si stdout du client est un terminal et que `NO_COLOR` est absent).
 
 | Verbe | Arguments suivants |
 |---|---|
-| `add` | `cols`, `rows`, `replace` (0/1), `n`, `n` × (`nom`, `commande`, `cwd`, `restart` (0/1), `nenv`, `nenv` × `K=V`, `ndeps`, `ndeps` × `nom`), puis l'environnement du client (`K=V`…) |
+| `add` | `cols`, `rows`, `replace` (0/1), `n`, `n` × (`nom`, `commande`, `cwd`, `restart` (0/1), `nenv`, `nenv` × `K=V`, `ndeps`, `ndeps` × `nom`, `health` (commande, vide = aucune), `interval`, `timeout`, `retries`), puis l'environnement du client (`K=V`…) |
 | `start` `stop` `restart` `rm` | cible (`nom` ou `all`) |
 | `logs` | cible (vide ou `all` = tous), nombre de lignes, `follow` (0/1) |
 | `ls`, `down`, `ping` | aucun |
@@ -119,6 +120,15 @@ attente passe en `waiting` ; `resolveWaiting` (appelée en fin de `tick` et apr�
 `add`/action) démarre ceux dont les dépendances sont prêtes, en boucle car un démarrage peut
 débloquer le maillon suivant. Les noms inconnus et les cycles sont refusés côté client
 (`config.zig`), le démon n'a donc aucun graphe à valider.
+
+**Santé** : `health.zig` lance la commande de santé d'un service avec un `fork` simple
+(pas de PTY), dans son propre groupe de processus et avec les mêmes `cwd`/environnement que
+le service ; sortie vers `/dev/null`. Un seul essai à la fois : `hc_pid`, `hc_deadline_ms`
+(le `timeout`) et `hc_next_ms` entrent dans le calcul du délai du `poll()`, et la fin de
+l'essai est collectée par le même `SIGCHLD` que les services. Au premier code 0 le service
+devient `healthy` et plus aucun essai n'est planifié (aucun réveil pour un service sain).
+`checkDeps` n'estime un service prêt que s'il est `healthy` (ou n'a pas de `health`) ; un
+service `unhealthy` fait échouer ses dépendants. Un essai en cours est tué avec le service.
 
 **`up` attaché** : après le `add`, le client ouvre une seconde connexion `logs`
 (tous les services, `follow`, 0 ligne d'historique) et fait un `poll()` sur cette

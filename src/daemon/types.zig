@@ -64,6 +64,18 @@ pub const Proc = struct {
     restart_pending: bool = false,
     remove_when_dead: bool = false,
 
+    // Readiness check: runs until it succeeds once (or gives up), then stops.
+    health_cmd: ?[:0]u8 = null,
+    health_interval_ms: i64 = 1000,
+    health_timeout_ms: i64 = 5000,
+    health_retries: u32 = 30,
+    healthy: bool = false,
+    health_failed: bool = false,
+    hc_pid: c_int = 0, // the running check, if any
+    hc_next_ms: i64 = 0,
+    hc_deadline_ms: i64 = 0,
+    hc_fails: u32 = 0,
+
     ring: Ring = .{},
     fmt: Fmt = .{},
     fmt_stale: bool = false, // fmt not kept up to date while nobody follows with prefixes
@@ -71,6 +83,14 @@ pub const Proc = struct {
     prefix: []u8 = &.{},
     log_fd: c_int = -1,
     log_bytes: usize = 0,
+};
+
+/// Optional readiness check of a service (`health:` in zpawn.yaml). Empty `cmd` = none.
+pub const HealthSpec = struct {
+    cmd: []const u8 = "",
+    interval_ms: i64 = 1000,
+    timeout_ms: i64 = 5000,
+    retries: u32 = 30,
 };
 
 pub const Follow = struct { all: bool, proc: ?*Proc, prefix: bool };

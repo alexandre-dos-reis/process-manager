@@ -30,6 +30,8 @@ const recomputeMaxName = util.recomputeMaxName;
 const sameList = util.sameList;
 const setList = util.setList;
 const startProc = control.startProc;
+const setHealth = util.setHealth;
+const sameHealth = util.sameHealth;
 const launch = control.launch;
 const checkDeps = control.checkDeps;
 const resolveWaiting = control.resolveWaiting;
@@ -81,14 +83,15 @@ pub fn collect(out: *Buf, ok: *bool, st: Style, target: []const u8, list: *std.A
 }
 
 /// Index just after the item that starts at `i` in an `add` request, or null if truncated.
-/// Item: name, cmd, cwd, restart, nenv, "K=V" * nenv, ndeps, dep * ndeps.
+/// Item: name, cmd, cwd, restart, nenv, "K=V" * nenv, ndeps, dep * ndeps,
+///       health cmd ("" = none), interval s, timeout s, retries.
 fn itemEnd(a: []const []const u8, i: usize) ?usize {
     if (a.len < i + 6) return null;
     const nenv = std.fmt.parseInt(usize, a[i + 4], 10) catch return null;
     const dpos = i + 5 + nenv;
     if (a.len <= dpos) return null;
     const ndeps = std.fmt.parseInt(usize, a[dpos], 10) catch return null;
-    const end = dpos + 1 + ndeps;
+    const end = dpos + 1 + ndeps + 4; // + health: cmd, interval, timeout, retries
     return if (a.len < end) null else end;
 }
 
@@ -105,7 +108,8 @@ fn reportLaunch(out: *Buf, st: Style, p: *Proc) void {
 }
 
 /// add: [verb, color, cols, rows, replace, n,
-///       (name, cmd, cwd, restart, nenv, "K=V" * nenv, ndeps, dep * ndeps) * n,
+///       (name, cmd, cwd, restart, nenv, "K=V" * nenv, ndeps, dep * ndeps,
+///        health cmd, interval, timeout, retries) * n,
 ///       client environment...]
 pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
     if (a.len < 6) return fail(out, ok, st, "malformed request", .{});
@@ -131,6 +135,13 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
         const over = a[i + 5 ..][0..nenv];
         const ndeps = std.fmt.parseInt(usize, a[i + 5 + nenv], 10) catch 0;
         const deps = a[i + 6 + nenv ..][0..ndeps];
+        const hp = i + 6 + nenv + ndeps;
+        const hs = types.HealthSpec{
+            .cmd = a[hp],
+            .interval_ms = @as(i64, std.fmt.parseInt(u32, a[hp + 1], 10) catch 1) * 1000,
+            .timeout_ms = @as(i64, std.fmt.parseInt(u32, a[hp + 2], 10) catch 5) * 1000,
+            .retries = std.fmt.parseInt(u32, a[hp + 3], 10) catch 30,
+        };
         i = itemEnd(a, i).?;
 
         if (!validName(name)) {
@@ -146,7 +157,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
                 fail(out, ok, st, "'{s}' already exists (use `zpawn restart {s}`, or `zpawn rm {s}` first)", .{ name, name, name });
                 continue;
             }
-            const same = std.mem.eql(u8, p.cmd, cmd) and std.mem.eql(u8, p.cwd, cwd) and sameList(&p.over, over) and sameList(&p.deps, deps);
+            const same = std.mem.eql(u8, p.cmd, cmd) and std.mem.eql(u8, p.cwd, cwd) and sameList(&p.over, over) and sameList(&p.deps, deps) and sameHealth(p, hs);
             setList(&p.env, env);
             p.cols = cols;
             p.rows = rows;
@@ -161,6 +172,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
             p.cwd = common.dupeZ(cwd);
             setList(&p.over, over);
             setList(&p.deps, deps);
+            setHealth(p, hs);
             if (p.pid > 0) {
                 stopProc(p);
                 p.restart_pending = true;
@@ -170,7 +182,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
                 reportLaunch(out, st, p);
             }
         } else {
-            const p = newProc(name, cmd, cwd, cols, rows, autorestart, env, over, deps);
+            const p = newProc(name, cmd, cwd, cols, rows, autorestart, env, over, deps, hs);
             state.procs.append(gpa, p) catch @panic("oom");
             recomputeMaxName();
             launch(p);
@@ -267,6 +279,17 @@ pub fn cmdLs(out: *Buf, st: Style) void {
                 glyph = "●";
                 color = GREEN;
                 label = if (p.stopping) "stopping" else "running";
+                if (!p.stopping and p.health_cmd != null) {
+                    if (p.health_failed) {
+                        color = RED;
+                        label = "unhealthy";
+                    } else if (p.healthy) {
+                        label = "healthy";
+                    } else {
+                        color = YELLOW;
+                        label = "starting";
+                    }
+                }
             },
             .stopped => {},
             .exited => {

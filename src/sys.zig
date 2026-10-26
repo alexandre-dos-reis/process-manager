@@ -17,6 +17,7 @@ pub const POLLNVAL: c_short = 0x020;
 
 pub const O_RDONLY: c_int = 0;
 pub const O_WRONLY: c_int = 1;
+pub const O_RDWR: c_int = 2;
 pub const O_CREAT: c_int = if (is_linux) 0o100 else 0x200;
 pub const O_APPEND: c_int = if (is_linux) 0o2000 else 0x8;
 pub const O_TRUNC: c_int = if (is_linux) 0o1000 else 0x400;
@@ -72,6 +73,7 @@ pub extern "c" fn getuid() c_uint;
 pub extern "c" fn fork() c_int;
 pub extern "c" fn forkpty(amaster: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const Winsize) c_int;
 pub extern "c" fn setsid() c_int;
+pub extern "c" fn setpgid(pid: c_int, pgid: c_int) c_int;
 pub extern "c" fn dup2(a: c_int, b: c_int) c_int;
 pub extern "c" fn pipe(fds: *[2]c_int) c_int;
 pub extern "c" fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;

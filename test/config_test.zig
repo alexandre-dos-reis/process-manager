@@ -232,3 +232,52 @@ test "depends_on: a diamond is not a cycle" {
 test "depends_on: wrong type" {
     try rejects("processes:\n  a:\n    cmd: ls\n    depends_on:\n      k: v\n", "depends_on");
 }
+
+test "health: short form is just the command, with defaults" {
+    var p = try ok("processes:\n  api:\n    cmd: node server.js\n    health: \"curl -fs http://localhost:3000/health\"\n");
+    defer p.deinit();
+    try t.expectEqualStrings("curl -fs http://localhost:3000/health", p.items[0].health);
+    try t.expectEqual(@as(u32, 1), p.items[0].health_interval);
+    try t.expectEqual(@as(u32, 5), p.items[0].health_timeout);
+    try t.expectEqual(@as(u32, 30), p.items[0].health_retries);
+}
+
+test "health: full form with interval, timeout and retries" {
+    var p = try ok(
+        \\processes:
+        \\  db:
+        \\    cmd: sleep 1
+        \\    health:
+        \\      cmd: pg_isready
+        \\      interval: 2
+        \\      timeout: 3
+        \\      retries: 10
+        \\
+    );
+    defer p.deinit();
+    try t.expectEqualStrings("pg_isready", p.items[0].health);
+    try t.expectEqual(@as(u32, 2), p.items[0].health_interval);
+    try t.expectEqual(@as(u32, 3), p.items[0].health_timeout);
+    try t.expectEqual(@as(u32, 10), p.items[0].health_retries);
+}
+
+test "health: none by default" {
+    var p = try ok("processes:\n  a: sleep 1\n");
+    defer p.deinit();
+    try t.expectEqualStrings("", p.items[0].health);
+}
+
+test "health: refused on a one-shot process" {
+    try rejects("processes:\n  m:\n    cmd: ls\n    restart: false\n    health: ls\n", "only for long-running");
+}
+
+test "health: bad numbers" {
+    try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      cmd: ls\n      interval: 0\n", "health.interval");
+    try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      cmd: ls\n      timeout: soon\n", "health.timeout");
+    try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      cmd: ls\n      retries: 99999\n", "health.retries");
+}
+
+test "health: unknown key and missing cmd" {
+    try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      cmd: ls\n      every: 2\n", "unknown key `every`");
+    try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      interval: 2\n", "missing `cmd:`");
+}

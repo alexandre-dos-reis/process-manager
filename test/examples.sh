@@ -60,6 +60,8 @@ else
   cd "$TMP/node" || exit 2
   "$Z" up -d >/dev/null
   check "l'API répond en JSON" 'curl -fs "http://127.0.0.1:$PORT/health" | grep -q "\"ok\":true"'
+  check "l'API passe healthy (commande de santé)" '[ "$(state_of api)" = healthy ]'
+  check "le worker attendait l'API puis tourne" '[ "$(state_of worker)" = running ]'
   check "migrate s'est terminé et n'est pas relancé" '[ "$(state_of migrate)" = exited ] && [ "$(state_of migrate | wc -l)" = 1 ]'
   now "migrate : sortie complète" '"$Z" logs migrate | grep -q "migrations terminées"'
   check "NODE_ENV du YAML vu par l'API" '"$Z" logs api | grep -q "(development)"'

@@ -20,6 +20,8 @@ echo "######## tests CLI (test/cli.sh)"
 sh test/cli.sh || rc=1
 echo "######## depends_on (test/depends.sh)"
 sh test/depends.sh || rc=1
+echo "######## health (test/health.sh)"
+sh test/health.sh || rc=1
 echo "######## exemples (test/examples.sh)"
 sh test/examples.sh || rc=1
 

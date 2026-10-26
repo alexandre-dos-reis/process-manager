@@ -75,6 +75,10 @@ processes:
       WORKER_NAME: billing
     # facultatif : attend ces processus (voir ci-dessous)
     depends_on: [migrate]
+  api:
+    cmd: node server.js
+    # commande de santé (facultative) : voir ci-dessous
+    health: "curl -fs http://localhost:3000/health"
   migrate:
     cmd: node migrate.js
     restart: false             # script ponctuel
@@ -86,13 +90,31 @@ processes:
 - dépendance **ponctuelle** (`restart: false`) : prête quand elle s'est terminée avec le
   code 0. Si elle échoue (code ≠ 0), le dépendant passe en `failed` et le log nomme la
   cause ; corrige, puis `zpawn restart` la dépendance et le dépendant.
-- dépendance **longue** (service, `restart` par défaut) : prête dès qu'elle tourne. Il n'y
-  a pas (encore) de test de santé : « démarré » ne veut pas dire « répond ».
+- dépendance **longue** (service, `restart` par défaut) : prête dès qu'elle tourne, ou, si
+  elle a une commande de santé (`health:`), dès que celle-ci réussit.
 - les chaînes marchent (`a` attend `b` qui attend `c`) ; un nom inconnu, une auto-dépendance
   ou un cycle sont refusés avant tout démarrage.
 - `kill` d'un processus en attente l'arrête pour de bon ; `restart` le relance (en
   respectant ses dépendances). Un redémarrage automatique après plantage ne repasse pas par
   l'attente.
+
+**`health`** : une commande de santé facultative pour un service (pas pour un script
+ponctuel). Courte : `health: "curl -fs http://localhost:3000/health"` ; complète :
+
+```yaml
+    health:
+      cmd: pg_isready
+      interval: 2     # secondes entre deux essais (défaut 1)
+      timeout: 3      # un essai plus long est tué (défaut 5)
+      retries: 10     # échecs avant de renoncer (défaut 30)
+```
+
+La commande tourne via `sh -c`, dans le dossier et avec l'environnement du service, sa
+sortie est ignorée. Réussir (code 0) une fois suffit : le service passe de `starting` à
+`healthy` (états visibles dans `zpawn ls`) et ses dépendants démarrent. Après `retries`
+échecs d'affilée il passe à `unhealthy` (il continue de tourner) et ses dépendants passent
+en `failed`. Les essais **s'arrêtent après le premier succès** : c'est un test de
+démarrage, pas une surveillance, donc un service sain ne coûte aucun réveil au démon.
 
 Entoure la commande de guillemets (`"…"` ou `'…'`) dès qu'elle contient `{`, `}`, `"`,
 `#` ou `: `. Les blocs `|` et `>` ne sont pas gérés par le parseur. Les clés inconnues
@@ -126,8 +148,8 @@ committer. Pour relire un log avec couleurs : `less -R .zpawn/logs/web.log`.
 - Le préfixe `nom |` est ajouté à chaque ligne en mode « tous les processus » ;
   la couleur active est réappliquée après le préfixe. Les lignes de plusieurs
   processus qui se mélangent au milieu d'une ligne ne sont pas réordonnées.
-- Le parseur YAML refuse un commentaire en fin de ligne après une liste `[a, b]` (mets-le
-  sur la ligne du dessus).
+- Le parseur YAML refuse un commentaire juste après une liste `[a, b]`, sur la même ligne
+  comme sur la suivante : mets-le plus haut, avant la clé.
 - Le parseur YAML ne gère pas les blocs `|`/`>` et abandonne en silence les entrées qui
   suivent une commande non quotée contenant `${...}` : mets la commande entre guillemets.
 

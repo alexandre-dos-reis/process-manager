@@ -8,6 +8,7 @@ const control = @import("control.zig");
 const state = @import("state.zig");
 const types = @import("types.zig");
 const Proc = types.Proc;
+const HealthSpec = types.HealthSpec;
 const closeMaster = control.closeMaster;
 const palette = types.palette;
 
@@ -81,7 +82,21 @@ pub fn sameList(list: *const std.ArrayList([:0]u8), strs: []const []const u8) bo
     return true;
 }
 
-pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8, over: []const []const u8, deps: []const []const u8) *Proc {
+pub fn setHealth(p: *Proc, hs: HealthSpec) void {
+    if (p.health_cmd) |h| freeStr(h);
+    p.health_cmd = if (hs.cmd.len > 0) common.dupeZ(hs.cmd) else null;
+    p.health_interval_ms = hs.interval_ms;
+    p.health_timeout_ms = hs.timeout_ms;
+    p.health_retries = hs.retries;
+}
+
+pub fn sameHealth(p: *const Proc, hs: HealthSpec) bool {
+    const cur: []const u8 = if (p.health_cmd) |h| h else "";
+    return std.mem.eql(u8, cur, hs.cmd) and (hs.cmd.len == 0 or (p.health_interval_ms == hs.interval_ms and
+        p.health_timeout_ms == hs.timeout_ms and p.health_retries == hs.retries));
+}
+
+pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8, over: []const []const u8, deps: []const []const u8, hs: HealthSpec) *Proc {
     const p = gpa.create(Proc) catch @panic("oom");
     p.* = .{
         .name = gpa.dupe(u8, name) catch @panic("oom"),
@@ -96,6 +111,7 @@ pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, ro
     setList(&p.env, env);
     setList(&p.over, over);
     setList(&p.deps, deps);
+    setHealth(p, hs);
     return p;
 }
 
@@ -108,6 +124,7 @@ pub fn freeProc(p: *Proc) void {
     p.over.deinit(gpa);
     for (p.deps.items) |e| freeStr(e);
     p.deps.deinit(gpa);
+    if (p.health_cmd) |h| freeStr(h);
     gpa.free(p.name);
     freeStr(p.cmd);
     freeStr(p.cwd);

@@ -7,6 +7,7 @@ const gpa = common.gpa;
 const output = @import("output.zig");
 const state = @import("state.zig");
 const util = @import("util.zig");
+const health = @import("health.zig");
 const findProc = util.findProc;
 const types = @import("types.zig");
 const KILL_GRACE_MS = types.KILL_GRACE_MS;
@@ -78,12 +79,9 @@ pub fn isOverridden(p: *Proc, e: []const u8) bool {
     return false;
 }
 
-pub fn startProc(p: *Proc) void {
-    openLog(p);
-
-    // Build environment before forking: TERM must allow colors.
-    var envp: std.ArrayList(?[*:0]const u8) = .empty;
-    defer envp.deinit(gpa);
+/// The environment a process (and its health check) runs with: the client's, overridden
+/// by the YAML `env:`, with a TERM that allows colors. Ends with the null terminator.
+pub fn buildEnvp(p: *Proc, envp: *std.ArrayList(?[*:0]const u8)) void {
     var has_term = false;
     for (p.env.items) |e| {
         if (isOverridden(p, e)) continue;
@@ -99,6 +97,15 @@ pub fn startProc(p: *Proc) void {
     }
     if (!has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
     envp.append(gpa, null) catch @panic("oom");
+}
+
+pub fn startProc(p: *Proc) void {
+    openLog(p);
+
+    // Build environment before forking: TERM must allow colors.
+    var envp: std.ArrayList(?[*:0]const u8) = .empty;
+    defer envp.deinit(gpa);
+    buildEnvp(p, &envp);
 
     // A plain command (`node server.js`) is exec'd so it replaces the shell: signals reach it
     // directly and its last words are not lost when a middleman shell dies first.
@@ -135,6 +142,10 @@ pub fn startProc(p: *Proc) void {
     sys.setCloexec(master);
     p.state = .running;
     p.started_ms = sys.nowMs();
+    p.healthy = false;
+    p.health_failed = false;
+    p.hc_fails = 0;
+    p.hc_next_ms = p.started_ms + @min(p.health_interval_ms, 500);
     p.stopping = false;
     p.killed = false;
     p.restart_pending = false;
@@ -149,7 +160,9 @@ pub fn checkDeps(p: *Proc) DepCheck {
     for (p.deps.items) |name| {
         const d = findProc(name) orelse continue; // names are validated by the client
         if (d.autorestart) {
+            if (d.health_failed) return .{ .failed = d.name };
             if (!(d.state == .running and !d.stopping)) return .{ .waiting = d.name };
+            if (d.health_cmd != null and !d.healthy) return .{ .waiting = d.name };
         } else switch (d.state) {
             .exited => if (d.exit_code != 0) return .{ .failed = d.name },
             else => return .{ .waiting = d.name },
@@ -211,6 +224,7 @@ pub fn stopProc(p: *Proc) void {
 }
 
 pub fn onExit(p: *Proc, status: c_int, now: i64) void {
+    health.killCheck(p);
     // Drain what is left, then close the PTY.
     while (readPty(p)) {}
     closeMaster(p);
@@ -280,6 +294,7 @@ pub fn tick(now: i64, reap: bool) void {
                 _ = sys.kill(-p.pid, sys.SIGKILL);
                 p.killed = true;
             }
+            health.tick(p, now, reap);
         } else if (p.state == .backoff and now >= p.next_start_ms) {
             startProc(p);
         }
@@ -294,6 +309,8 @@ pub fn pollTimeout(now: i64) c_int {
     for (state.procs.items) |p| {
         var due: i64 = -1;
         if (p.pid > 0 and p.stopping and !p.killed) due = p.kill_at_ms else if (p.pid == 0 and p.state == .backoff) due = p.next_start_ms;
+        const hd = health.due(p);
+        if (hd >= 0 and (due < 0 or hd < due)) due = hd;
         if (due < 0) continue;
         const d = @max(due - now, 0);
         if (best < 0 or d < best) best = d;

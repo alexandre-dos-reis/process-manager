@@ -22,12 +22,16 @@ pub const Item = struct {
     restart: bool,
     env: []const []const u8, // "KEY=value"
     deps: []const []const u8 = &.{}, // names this process waits for
+    health: []const u8 = "", // readiness command ("" = none)
+    health_interval: u32 = 1, // seconds
+    health_timeout: u32 = 5, // seconds
+    health_retries: u32 = 30,
 };
 
 /// `Invalid`: the file is wrong; `msg` explains why (already prefixed with the path).
 pub const Error = error{ Invalid, OutOfMemory };
 
-const allowed_keys = "cmd, cwd, restart, env, depends_on";
+const allowed_keys = "cmd, cwd, restart, env, depends_on, health";
 
 fn fail(msg: *Buf, comptime f: []const u8, args: anytype) Error {
     msg.print(f, args);
@@ -123,7 +127,7 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
             const k = kv.key_ptr.*;
             if (!(std.mem.eql(u8, k, "cmd") or std.mem.eql(u8, k, "cwd") or
                 std.mem.eql(u8, k, "restart") or std.mem.eql(u8, k, "env") or
-                std.mem.eql(u8, k, "depends_on")))
+                std.mem.eql(u8, k, "depends_on") or std.mem.eql(u8, k, "health")))
                 return fail(msg, "{s}: processes.{s}: unknown key `{s}` (allowed: " ++ allowed_keys ++ ")\n", .{ path, name, k });
         }
 
@@ -173,7 +177,9 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
             }
         }
 
-        try items.append(arena, .{ .name = name, .cmd = cmd, .cwd = cwd, .restart = restart, .env = env.items, .deps = deps.items });
+        var item = Item{ .name = name, .cmd = cmd, .cwd = cwd, .restart = restart, .env = env.items, .deps = deps.items };
+        if (m.get("health")) |h| try parseHealth(&item, h, path, msg);
+        try items.append(arena, item);
     }
     try checkDeps(arena, items.items, path, msg);
     return items.items;
@@ -214,4 +220,46 @@ fn visit(items: []const Item, mark: []u8, i: usize, path: []const u8, msg: *Buf)
         if (mark[j] == 0) try visit(items, mark, j, path, msg);
     }
     mark[i] = 2;
+}
+
+fn parseSeconds(v: Yaml.Value, path: []const u8, name: []const u8, key: []const u8, msg: *Buf) Error!u32 {
+    const s = scalarOf(v) orelse
+        return fail(msg, "{s}: processes.{s}.health.{s} must be a number of seconds\n", .{ path, name, key });
+    const n = std.fmt.parseInt(u32, s, 10) catch 0;
+    if (n == 0 or n > 3600)
+        return fail(msg, "{s}: processes.{s}.health.{s} must be a whole number between 1 and 3600 (got `{s}`)\n", .{ path, name, key, s });
+    return n;
+}
+
+/// `health: <command>` or `health: {cmd, interval, timeout, retries}`.
+fn parseHealth(item: *Item, h: Yaml.Value, path: []const u8, msg: *Buf) Error!void {
+    const name = item.name;
+    if (!item.restart)
+        return fail(msg, "{s}: processes.{s}.health: only for long-running processes (restart: false ones exit by design)\n", .{ path, name });
+    if (scalarOf(h)) |cmd| {
+        if (cmd.len == 0) return fail(msg, "{s}: processes.{s}.health: empty command\n", .{ path, name });
+        item.health = cmd;
+        return;
+    }
+    const hm = h.asMap() orelse
+        return fail(msg, "{s}: processes.{s}.health must be a command or a mapping with `cmd:`\n", .{ path, name });
+    var it = hm.iterator();
+    while (it.next()) |kv| {
+        const k = kv.key_ptr.*;
+        const v = kv.value_ptr.*;
+        if (std.mem.eql(u8, k, "cmd")) {
+            item.health = scalarOf(v) orelse
+                return fail(msg, "{s}: processes.{s}.health.cmd must be text\n", .{ path, name });
+        } else if (std.mem.eql(u8, k, "interval")) {
+            item.health_interval = try parseSeconds(v, path, name, k, msg);
+        } else if (std.mem.eql(u8, k, "timeout")) {
+            item.health_timeout = try parseSeconds(v, path, name, k, msg);
+        } else if (std.mem.eql(u8, k, "retries")) {
+            item.health_retries = try parseSeconds(v, path, name, k, msg);
+        } else {
+            return fail(msg, "{s}: processes.{s}.health: unknown key `{s}` (allowed: cmd, interval, timeout, retries)\n", .{ path, name, k });
+        }
+    }
+    if (item.health.len == 0)
+        return fail(msg, "{s}: processes.{s}.health: missing `cmd:`\n", .{ path, name });
 }
