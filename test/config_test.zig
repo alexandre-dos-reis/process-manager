@@ -155,3 +155,80 @@ test "syntax errors carry a line number" {
 test "a key with no value at the very end gives a clear error, not a crash" {
     try rejects("processes:\n  web:\n    cmd: ls\n    env:\n      EMPTY:\n", "unexpected end of file");
 }
+
+test "depends_on: block list, flow list and single name" {
+    var p = try ok(
+        \\processes:
+        \\  migrate:
+        \\    cmd: ls
+        \\    restart: false
+        \\  cache: sleep 1
+        \\  a:
+        \\    cmd: ls
+        \\    depends_on:
+        \\      - migrate
+        \\      - cache
+        \\  b:
+        \\    cmd: ls
+        \\    depends_on: [migrate]
+        \\  c:
+        \\    cmd: ls
+        \\    depends_on: cache
+        \\
+    );
+    defer p.deinit();
+    try t.expectEqual(@as(usize, 0), p.items[0].deps.len);
+    try t.expectEqual(@as(usize, 2), p.items[2].deps.len);
+    try t.expectEqualStrings("migrate", p.items[2].deps[0]);
+    try t.expectEqualStrings("cache", p.items[2].deps[1]);
+    try t.expectEqual(@as(usize, 1), p.items[3].deps.len);
+    try t.expectEqualStrings("migrate", p.items[3].deps[0]);
+    try t.expectEqualStrings("cache", p.items[4].deps[0]);
+}
+
+test "depends_on: unknown process" {
+    try rejects("processes:\n  a:\n    cmd: ls\n    depends_on: [ghost]\n", "unknown process `ghost`");
+}
+
+test "depends_on: a process cannot wait for itself" {
+    try rejects("processes:\n  a:\n    cmd: ls\n    depends_on: [a]\n", "cannot depend on itself");
+}
+
+test "depends_on: cycles are refused" {
+    try rejects(
+        \\processes:
+        \\  a:
+        \\    cmd: ls
+        \\    depends_on: [b]
+        \\  b:
+        \\    cmd: ls
+        \\    depends_on: [c]
+        \\  c:
+        \\    cmd: ls
+        \\    depends_on: [a]
+        \\
+    , "cycle");
+}
+
+test "depends_on: a diamond is not a cycle" {
+    var p = try ok(
+        \\processes:
+        \\  base: sleep 1
+        \\  left:
+        \\    cmd: ls
+        \\    depends_on: [base]
+        \\  right:
+        \\    cmd: ls
+        \\    depends_on: [base]
+        \\  top:
+        \\    cmd: ls
+        \\    depends_on: [left, right]
+        \\
+    );
+    defer p.deinit();
+    try t.expectEqual(@as(usize, 4), p.items.len);
+}
+
+test "depends_on: wrong type" {
+    try rejects("processes:\n  a:\n    cmd: ls\n    depends_on:\n      k: v\n", "depends_on");
+}

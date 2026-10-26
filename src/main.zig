@@ -237,6 +237,8 @@ fn addItems(home: [:0]const u8, color: bool, replace: bool, items: []const confi
         req.str(if (it.restart) "1" else "0");
         req.num(it.env.len);
         for (it.env) |e| req.str(e);
+        req.num(it.deps.len);
+        for (it.deps) |d| req.str(d);
     }
     // The client's own environment comes last (PATH, HOME...); per-process env wins over it.
     var e = sys.environ;

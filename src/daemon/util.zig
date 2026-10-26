@@ -81,7 +81,7 @@ pub fn sameList(list: *const std.ArrayList([:0]u8), strs: []const []const u8) bo
     return true;
 }
 
-pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8, over: []const []const u8) *Proc {
+pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8, over: []const []const u8, deps: []const []const u8) *Proc {
     const p = gpa.create(Proc) catch @panic("oom");
     p.* = .{
         .name = gpa.dupe(u8, name) catch @panic("oom"),
@@ -95,6 +95,7 @@ pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, ro
     state.color_counter += 1;
     setList(&p.env, env);
     setList(&p.over, over);
+    setList(&p.deps, deps);
     return p;
 }
 
@@ -105,6 +106,8 @@ pub fn freeProc(p: *Proc) void {
     p.env.deinit(gpa);
     for (p.over.items) |e| freeStr(e);
     p.over.deinit(gpa);
+    for (p.deps.items) |e| freeStr(e);
+    p.deps.deinit(gpa);
     gpa.free(p.name);
     freeStr(p.cmd);
     freeStr(p.cwd);

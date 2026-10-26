@@ -30,6 +30,9 @@ const recomputeMaxName = util.recomputeMaxName;
 const sameList = util.sameList;
 const setList = util.setList;
 const startProc = control.startProc;
+const launch = control.launch;
+const checkDeps = control.checkDeps;
+const resolveWaiting = control.resolveWaiting;
 const stopProc = control.stopProc;
 const validName = util.validName;
 
@@ -77,8 +80,33 @@ pub fn collect(out: *Buf, ok: *bool, st: Style, target: []const u8, list: *std.A
     return false;
 }
 
+/// Index just after the item that starts at `i` in an `add` request, or null if truncated.
+/// Item: name, cmd, cwd, restart, nenv, "K=V" * nenv, ndeps, dep * ndeps.
+fn itemEnd(a: []const []const u8, i: usize) ?usize {
+    if (a.len < i + 6) return null;
+    const nenv = std.fmt.parseInt(usize, a[i + 4], 10) catch return null;
+    const dpos = i + 5 + nenv;
+    if (a.len <= dpos) return null;
+    const ndeps = std.fmt.parseInt(usize, a[dpos], 10) catch return null;
+    const end = dpos + 1 + ndeps;
+    return if (a.len < end) null else end;
+}
+
+fn reportLaunch(out: *Buf, st: Style, p: *Proc) void {
+    if (p.pid > 0) return report(out, st, p, "started (pid {d})", .{p.pid});
+    switch (p.state) {
+        .waiting => switch (checkDeps(p)) {
+            .waiting => |n| report(out, st, p, "waiting for {s}", .{n}),
+            else => report(out, st, p, "waiting", .{}),
+        },
+        .failed => report(out, st, p, "not started (see `zpawn logs {s}`)", .{p.name}),
+        else => report(out, st, p, "not started", .{}),
+    }
+}
+
 /// add: [verb, color, cols, rows, replace, n,
-///       (name, cmd, cwd, restart, nenv, "K=V" * nenv) * n, client environment...]
+///       (name, cmd, cwd, restart, nenv, "K=V" * nenv, ndeps, dep * ndeps) * n,
+///       client environment...]
 pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
     if (a.len < 6) return fail(out, ok, st, "malformed request", .{});
     const cols = parseU16(a[2], 160);
@@ -89,12 +117,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
     // The client's environment follows the items: walk them once to find where.
     var end: usize = 6;
     var k: usize = 0;
-    while (k < n) : (k += 1) {
-        if (a.len < end + 5) return fail(out, ok, st, "malformed request", .{});
-        const nenv = std.fmt.parseInt(usize, a[end + 4], 10) catch return fail(out, ok, st, "malformed request", .{});
-        end += 5 + nenv;
-    }
-    if (a.len < end) return fail(out, ok, st, "malformed request", .{});
+    while (k < n) : (k += 1) end = itemEnd(a, end) orelse return fail(out, ok, st, "malformed request", .{});
     const env = a[end..];
 
     var i: usize = 6;
@@ -106,7 +129,9 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
         const autorestart = a[i + 3].len > 0 and a[i + 3][0] == '1';
         const nenv = std.fmt.parseInt(usize, a[i + 4], 10) catch 0;
         const over = a[i + 5 ..][0..nenv];
-        i += 5 + nenv;
+        const ndeps = std.fmt.parseInt(usize, a[i + 5 + nenv], 10) catch 0;
+        const deps = a[i + 6 + nenv ..][0..ndeps];
+        i = itemEnd(a, i).?;
 
         if (!validName(name)) {
             fail(out, ok, st, "invalid name '{s}' (use letters, digits, - _ . ; max 32)", .{name});
@@ -121,7 +146,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
                 fail(out, ok, st, "'{s}' already exists (use `zpawn restart {s}`, or `zpawn rm {s}` first)", .{ name, name, name });
                 continue;
             }
-            const same = std.mem.eql(u8, p.cmd, cmd) and std.mem.eql(u8, p.cwd, cwd) and sameList(&p.over, over);
+            const same = std.mem.eql(u8, p.cmd, cmd) and std.mem.eql(u8, p.cwd, cwd) and sameList(&p.over, over) and sameList(&p.deps, deps);
             setList(&p.env, env);
             p.cols = cols;
             p.rows = rows;
@@ -135,21 +160,21 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
             p.cmd = common.dupeZ(cmd);
             p.cwd = common.dupeZ(cwd);
             setList(&p.over, over);
+            setList(&p.deps, deps);
             if (p.pid > 0) {
                 stopProc(p);
                 p.restart_pending = true;
                 report(out, st, p, "definition changed, restarting", .{});
             } else {
-                p.fails = 0;
-                startProc(p);
-                report(out, st, p, "started (pid {d})", .{p.pid});
+                launch(p);
+                reportLaunch(out, st, p);
             }
         } else {
-            const p = newProc(name, cmd, cwd, cols, rows, autorestart, env, over);
+            const p = newProc(name, cmd, cwd, cols, rows, autorestart, env, over, deps);
             state.procs.append(gpa, p) catch @panic("oom");
             recomputeMaxName();
-            startProc(p);
-            report(out, st, p, "started (pid {d})", .{p.pid});
+            launch(p);
+            reportLaunch(out, st, p);
         }
     }
 
@@ -162,7 +187,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
             k = 0;
             while (k < n) : (k += 1) {
                 if (std.mem.eql(u8, a[j], p.name)) listed = true;
-                j += 5 + (std.fmt.parseInt(usize, a[j + 4], 10) catch 0);
+                j = itemEnd(a, j).?;
             }
             if (!listed) {
                 p.remove_when_dead = true;
@@ -171,6 +196,7 @@ pub fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
             }
         }
     }
+    resolveWaiting();
 }
 
 pub fn cmdAction(out: *Buf, ok: *bool, st: Style, verb: []const u8, target: []const u8) void {
@@ -186,9 +212,8 @@ pub fn cmdAction(out: *Buf, ok: *bool, st: Style, verb: []const u8, target: []co
                 p.restart_pending = true;
                 report(out, st, p, "will start once it has stopped", .{});
             } else {
-                p.fails = 0;
-                startProc(p);
-                report(out, st, p, "started (pid {d})", .{p.pid});
+                launch(p);
+                reportLaunch(out, st, p);
             }
         } else if (std.mem.eql(u8, verb, "stop")) {
             if (p.pid == 0 and p.state == .stopped) {
@@ -204,9 +229,8 @@ pub fn cmdAction(out: *Buf, ok: *bool, st: Style, verb: []const u8, target: []co
                 p.restart_pending = true;
                 report(out, st, p, "restarting", .{});
             } else {
-                p.fails = 0;
-                startProc(p);
-                report(out, st, p, "started (pid {d})", .{p.pid});
+                launch(p);
+                reportLaunch(out, st, p);
             }
         } else if (std.mem.eql(u8, verb, "rm")) {
             p.remove_when_dead = true;
@@ -214,6 +238,7 @@ pub fn cmdAction(out: *Buf, ok: *bool, st: Style, verb: []const u8, target: []co
             report(out, st, p, "removed", .{});
         }
     }
+    resolveWaiting();
 }
 
 pub fn padTo(out: *Buf, have: usize, want: usize) void {
@@ -262,6 +287,11 @@ pub fn cmdLs(out: *Buf, st: Style) void {
                 glyph = "✖";
                 color = RED;
                 label = "failed";
+            },
+            .waiting => {
+                glyph = "◌";
+                color = YELLOW;
+                label = "waiting";
             },
         }
 

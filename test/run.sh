@@ -18,6 +18,8 @@ echo "######## messages de commit (test/commit_messages.sh)"
 sh test/commit_messages.sh || rc=1
 echo "######## tests CLI (test/cli.sh)"
 sh test/cli.sh || rc=1
+echo "######## depends_on (test/depends.sh)"
+sh test/depends.sh || rc=1
 echo "######## exemples (test/examples.sh)"
 sh test/examples.sh || rc=1
 

@@ -21,12 +21,13 @@ pub const Item = struct {
     cwd: []const u8,
     restart: bool,
     env: []const []const u8, // "KEY=value"
+    deps: []const []const u8 = &.{}, // names this process waits for
 };
 
 /// `Invalid`: the file is wrong; `msg` explains why (already prefixed with the path).
 pub const Error = error{ Invalid, OutOfMemory };
 
-const allowed_keys = "cmd, cwd, restart, env";
+const allowed_keys = "cmd, cwd, restart, env, depends_on";
 
 fn fail(msg: *Buf, comptime f: []const u8, args: anytype) Error {
     msg.print(f, args);
@@ -121,7 +122,8 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
         while (kit.next()) |kv| {
             const k = kv.key_ptr.*;
             if (!(std.mem.eql(u8, k, "cmd") or std.mem.eql(u8, k, "cwd") or
-                std.mem.eql(u8, k, "restart") or std.mem.eql(u8, k, "env")))
+                std.mem.eql(u8, k, "restart") or std.mem.eql(u8, k, "env") or
+                std.mem.eql(u8, k, "depends_on")))
                 return fail(msg, "{s}: processes.{s}: unknown key `{s}` (allowed: " ++ allowed_keys ++ ")\n", .{ path, name, k });
         }
 
@@ -156,7 +158,60 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
             }
         }
 
-        try items.append(arena, .{ .name = name, .cmd = cmd, .cwd = cwd, .restart = restart, .env = env.items });
+        var deps: std.ArrayList([]const u8) = .empty;
+        if (m.get("depends_on")) |d| {
+            if (scalarOf(d)) |one| {
+                try deps.append(arena, one);
+            } else if (d == .list) {
+                for (d.list) |item| {
+                    const dn = scalarOf(item) orelse
+                        return fail(msg, "{s}: processes.{s}.depends_on must be a list of process names\n", .{ path, name });
+                    try deps.append(arena, dn);
+                }
+            } else if (d != .empty) {
+                return fail(msg, "{s}: processes.{s}.depends_on must be a name or a list of names\n", .{ path, name });
+            }
+        }
+
+        try items.append(arena, .{ .name = name, .cmd = cmd, .cwd = cwd, .restart = restart, .env = env.items, .deps = deps.items });
     }
+    try checkDeps(arena, items.items, path, msg);
     return items.items;
+}
+
+fn indexOf(items: []const Item, name: []const u8) ?usize {
+    for (items, 0..) |it, i| {
+        if (std.mem.eql(u8, it.name, name)) return i;
+    }
+    return null;
+}
+
+/// Every dependency must exist, and the graph must have no cycle.
+fn checkDeps(arena: Allocator, items: []const Item, path: []const u8, msg: *Buf) Error!void {
+    for (items) |it| {
+        for (it.deps) |d| {
+            if (std.mem.eql(u8, d, it.name))
+                return fail(msg, "{s}: processes.{s}.depends_on: a process cannot depend on itself\n", .{ path, it.name });
+            if (indexOf(items, d) == null)
+                return fail(msg, "{s}: processes.{s}.depends_on: unknown process `{s}`\n", .{ path, it.name, d });
+        }
+    }
+
+    // Depth-first search; 0 = unvisited, 1 = on the current path, 2 = done.
+    const mark = try arena.alloc(u8, items.len);
+    @memset(mark, 0);
+    for (0..items.len) |start| {
+        if (mark[start] == 0) try visit(items, mark, start, path, msg);
+    }
+}
+
+fn visit(items: []const Item, mark: []u8, i: usize, path: []const u8, msg: *Buf) Error!void {
+    mark[i] = 1;
+    for (items[i].deps) |d| {
+        const j = indexOf(items, d).?;
+        if (mark[j] == 1)
+            return fail(msg, "{s}: depends_on cycle: `{s}` and `{s}` wait for each other\n", .{ path, items[i].name, items[j].name });
+        if (mark[j] == 0) try visit(items, mark, j, path, msg);
+    }
+    mark[i] = 2;
 }

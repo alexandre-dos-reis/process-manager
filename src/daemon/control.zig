@@ -6,6 +6,8 @@ const Buf = common.Buf;
 const gpa = common.gpa;
 const output = @import("output.zig");
 const state = @import("state.zig");
+const util = @import("util.zig");
+const findProc = util.findProc;
 const types = @import("types.zig");
 const KILL_GRACE_MS = types.KILL_GRACE_MS;
 const MAX_QUICK_FAILS = types.MAX_QUICK_FAILS;
@@ -139,6 +141,60 @@ pub fn startProc(p: *Proc) void {
     note(p, "started (pid {d})", .{pid});
 }
 
+pub const DepCheck = union(enum) { ready, waiting: []const u8, failed: []const u8 };
+
+/// A dependency is satisfied when it is running (a service) or when it ran to completion
+/// with exit code 0 (a one-shot, i.e. `restart: false`). A one-shot that failed blocks for good.
+pub fn checkDeps(p: *Proc) DepCheck {
+    for (p.deps.items) |name| {
+        const d = findProc(name) orelse continue; // names are validated by the client
+        if (d.autorestart) {
+            if (!(d.state == .running and !d.stopping)) return .{ .waiting = d.name };
+        } else switch (d.state) {
+            .exited => if (d.exit_code != 0) return .{ .failed = d.name },
+            else => return .{ .waiting = d.name },
+        }
+    }
+    return .ready;
+}
+
+/// Starts `p` unless a dependency says otherwise (then it waits, or fails).
+pub fn launch(p: *Proc) void {
+    switch (checkDeps(p)) {
+        .ready => {
+            p.fails = 0;
+            startProc(p);
+        },
+        .waiting => |n| {
+            if (p.state != .waiting) note(p, "waiting for {s}", .{n});
+            p.state = .waiting;
+        },
+        .failed => |n| {
+            p.state = .failed;
+            note(p, "not started: {s} failed (fix it, then `zpawn restart {s}`)", .{ n, p.name });
+        },
+    }
+}
+
+/// Starts every waiting process whose dependencies are now satisfied. Repeats because a
+/// start can unblock the next link of a chain.
+pub fn resolveWaiting() void {
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (state.procs.items) |p| {
+            if (p.state != .waiting) continue;
+            switch (checkDeps(p)) {
+                .waiting => {},
+                else => {
+                    launch(p);
+                    changed = true;
+                },
+            }
+        }
+    }
+}
+
 pub fn stopProc(p: *Proc) void {
     if (p.pid > 0) {
         if (!p.stopping) {
@@ -179,8 +235,7 @@ pub fn onExit(p: *Proc, status: c_int, now: i64) void {
         note(p, "stopped", .{});
         if (p.restart_pending) {
             p.restart_pending = false;
-            p.fails = 0;
-            startProc(p);
+            launch(p);
         }
         return;
     }
@@ -229,6 +284,7 @@ pub fn tick(now: i64, reap: bool) void {
             startProc(p);
         }
     }
+    resolveWaiting();
 }
 
 /// How long poll() may sleep: until the next timer (restart delay, kill grace,

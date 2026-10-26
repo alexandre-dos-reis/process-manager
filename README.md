@@ -73,7 +73,26 @@ processes:
     restart: false             # facultatif, défaut true
     env:                       # facultatif, s'ajoute à l'environnement du client
       WORKER_NAME: billing
+    # facultatif : attend ces processus (voir ci-dessous)
+    depends_on: [migrate]
+  migrate:
+    cmd: node migrate.js
+    restart: false             # script ponctuel
 ```
+
+**`depends_on`** : un processus ne démarre qu'une fois ses dépendances prêtes. Il reste en
+état `waiting` en attendant.
+
+- dépendance **ponctuelle** (`restart: false`) : prête quand elle s'est terminée avec le
+  code 0. Si elle échoue (code ≠ 0), le dépendant passe en `failed` et le log nomme la
+  cause ; corrige, puis `zpawn restart` la dépendance et le dépendant.
+- dépendance **longue** (service, `restart` par défaut) : prête dès qu'elle tourne. Il n'y
+  a pas (encore) de test de santé : « démarré » ne veut pas dire « répond ».
+- les chaînes marchent (`a` attend `b` qui attend `c`) ; un nom inconnu, une auto-dépendance
+  ou un cycle sont refusés avant tout démarrage.
+- `kill` d'un processus en attente l'arrête pour de bon ; `restart` le relance (en
+  respectant ses dépendances). Un redémarrage automatique après plantage ne repasse pas par
+  l'attente.
 
 Entoure la commande de guillemets (`"…"` ou `'…'`) dès qu'elle contient `{`, `}`, `"`,
 `#` ou `: `. Les blocs `|` et `>` ne sont pas gérés par le parseur. Les clés inconnues
@@ -107,6 +126,8 @@ committer. Pour relire un log avec couleurs : `less -R .zpawn/logs/web.log`.
 - Le préfixe `nom |` est ajouté à chaque ligne en mode « tous les processus » ;
   la couleur active est réappliquée après le préfixe. Les lignes de plusieurs
   processus qui se mélangent au milieu d'une ligne ne sont pas réordonnées.
+- Le parseur YAML refuse un commentaire en fin de ligne après une liste `[a, b]` (mets-le
+  sur la ligne du dessus).
 - Le parseur YAML ne gère pas les blocs `|`/`>` et abandonne en silence les entrées qui
   suivent une commande non quotée contenant `${...}` : mets la commande entre guillemets.
 

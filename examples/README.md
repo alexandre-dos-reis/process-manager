@@ -57,6 +57,9 @@ zpawn restart api
 ```
 
 `migrate` est un script ponctuel (`restart: false`) : il passe à `exited` et reste ainsi.
+`api` et `worker` ont `depends_on: [migrate]` : pendant ~1 s, `zpawn ls` les montre en
+`waiting`, puis ils démarrent dès que `migrate` s'est terminé avec le code 0. Si `migrate`
+échouait, ils passeraient en `failed` avec un message qui nomme la cause.
 `PORT=4000 zpawn up` change le port de l'API ; `api` et `worker` reçoivent chacun leurs
 variables (`NODE_ENV`, `QUEUE`) depuis le YAML.
 

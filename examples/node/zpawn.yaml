@@ -1,5 +1,6 @@
 # Une vraie petite appli Node (sans dépendance, juste `node`) :
 #   migrate : script ponctuel, ne redémarre pas une fois terminé
+#   api et worker attendent que migrate ait fini avec succès (depends_on)
 #   api     : serveur HTTP sur le port 3000 (PORT=4000 zpawn up pour changer)
 #   worker  : consommateur de file, avec une variable d'environnement dédiée
 #
@@ -12,9 +13,12 @@ processes:
     restart: false
   api:
     cmd: node server.js
+    # attend la fin (réussie) de migrate avant de démarrer
+    depends_on: [migrate]
     env:
       NODE_ENV: development
   worker:
     cmd: node worker.js
+    depends_on: [migrate]
     env:
       QUEUE: emails

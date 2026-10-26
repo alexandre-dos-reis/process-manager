@@ -25,7 +25,17 @@ texte minimal à la place de XML-RPC.
 | Fichier | Rôle |
 |---|---|
 | `src/main.zig` | Client : sous-commandes (`init`, `up`, `down`, `kill`, `restart`, `logs`, `ls`) analysées par zig-clap (`vendor/zig-clap/`), mode attaché de `up` (diffusion des logs, Ctrl-C → `down`), lecture de `zpawn.yaml` (`src/config.zig`, via la bibliothèque YAML de `vendor/`), démarrage automatique du démon, envoi de la requête, affichage de la réponse. Aiguille aussi `zpawn daemon` vers le démon. |
-| `src/daemon.zig` | Démon : état des processus, PTY, boucle d'événements, commandes, tampon de sortie, formatage des préfixes. |
+| `src/daemon.zig` | Point d'entrée du démon : socket d'écoute, signaux (tube « self-pipe »), boucle `poll()`. |
+| `src/daemon/types.zig` | Types partagés (`Proc`, `Conn`, `State`, `Follow`), constantes (délais, tailles) et couleurs. |
+| `src/daemon/state.zig` | Variables globales du démon (liste des processus, connexions, arrêt en cours…). Un seul thread : de simples globales. |
+| `src/daemon/fmt.zig` | `Fmt` : automate ligne / séquence d'échappement / couleur (SGR) qui insère les préfixes sans casser les couleurs. Testé unitairement. |
+| `src/daemon/ring.zig` | `Ring` : historique circulaire de la sortie brute. Testé unitairement. |
+| `src/daemon/output.zig` | Chemin de la sortie : anneau, fichier de log, abonnés ; notes du démon (`[zpawn] …`). |
+| `src/daemon/control.zig` | Cycle de vie : `forkpty` + `exec`, arrêt, collecte des fins de processus, minuteries de relance, **dépendances** (`launch`, `resolveWaiting`). |
+| `src/daemon/commands.zig` | Les requêtes des clients : `add` (c'est `up`), `start`/`stop`/`restart`/`rm`, `ls`, `logs`, `down`. |
+| `src/daemon/server.zig` | Connexions : accepter, lire les requêtes, vider les sorties, balayer les connexions mortes. |
+| `src/daemon/util.zig` | Petits utilitaires : recherche par nom, validation, durées, listes de chaînes, création/libération d'un `Proc`. |
+| `src/core.zig` | Module d'exposition pour les tests unitaires (config, Fmt, Ring). Pas utilisé par le binaire. |
 | `src/common.zig` | Utilitaires partagés : tampon d'octets extensible (`Buf`), concaténation de chemins, recherche du dossier `.zpawn`, connexion au socket. |
 | `src/sys.zig` | Déclarations libc écrites à la main (`forkpty`, `poll`, sockets, `waitpid`…) et constantes Linux/macOS. |
 | `test/` | Tests : `config_test.zig` (unitaires), `cli.sh`, `examples.sh`, `run.sh`. Jamais de tests dans `src/`. |
@@ -83,7 +93,7 @@ vrai si stdout du client est un terminal et que `NO_COLOR` est absent).
 
 | Verbe | Arguments suivants |
 |---|---|
-| `add` | `cols`, `rows`, `replace` (0/1), `n`, `n` × (`nom`, `commande`, `cwd`, `restart` (0/1), `nenv`, `nenv` × `K=V`), puis l'environnement du client (`K=V`…) |
+| `add` | `cols`, `rows`, `replace` (0/1), `n`, `n` × (`nom`, `commande`, `cwd`, `restart` (0/1), `nenv`, `nenv` × `K=V`, `ndeps`, `ndeps` × `nom`), puis l'environnement du client (`K=V`…) |
 | `start` `stop` `restart` `rm` | cible (`nom` ou `all`) |
 | `logs` | cible (vide ou `all` = tous), nombre de lignes, `follow` (0/1) |
 | `ls`, `down`, `ping` | aucun |
@@ -101,6 +111,14 @@ sont des surcharges par processus, appliquées par-dessus l'environnement du cli
 Si une définition identique (commande, cwd, surcharges) tourne déjà, le démon répond « unchanged » ; si elle a
 changé, il redémarre le processus. Avec `replace=1`, tout processus absent de la requête
 est arrêté puis supprimé (`remove_when_dead`).
+
+**Dépendances** : chaque `Proc` garde les noms de ses `depends_on`. Au lancement
+(`launch`), `checkDeps` répond *prêt* (un service tourne, ou un script ponctuel a fini avec
+le code 0), *attente* ou *échec* (script ponctuel terminé avec un code ≠ 0). Un processus en
+attente passe en `waiting` ; `resolveWaiting` (appelée en fin de `tick` et après chaque
+`add`/action) démarre ceux dont les dépendances sont prêtes, en boucle car un démarrage peut
+débloquer le maillon suivant. Les noms inconnus et les cycles sont refusés côté client
+(`config.zig`), le démon n'a donc aucun graphe à valider.
 
 **`up` attaché** : après le `add`, le client ouvre une seconde connexion `logs`
 (tous les services, `follow`, 0 ligne d'historique) et fait un `poll()` sur cette
@@ -150,7 +168,8 @@ dans le `cwd` demandé, avec l'**environnement du client** qui a fait `up`
 (PATH inclus). `TERM` vaut `xterm-256color` s'il manque ou vaut `dumb`. La taille du
 PTY est celle du terminal du client au moment du `up`.
 
-États : `running`, `stopped`, `exited`, `backoff` (attente avant relance), `failed`.
+États : `running`, `stopped`, `exited`, `backoff` (attente avant relance), `failed`,
+`waiting` (attend ses `depends_on`).
 
 - **Arrêt** : `SIGTERM` à tout le groupe (`kill(-pid)`), puis `SIGKILL` après 5 s si
   le processus s'accroche. Après la sortie du processus, un dernier `SIGTERM` au

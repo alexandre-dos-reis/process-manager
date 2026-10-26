@@ -35,7 +35,7 @@ pub const Style = struct {
 
 // ------------------------------------------------------------------- types
 
-pub const State = enum { running, stopped, exited, backoff, failed };
+pub const State = enum { running, stopped, exited, backoff, failed, waiting };
 
 pub const Proc = struct {
     name: []u8,
@@ -43,6 +43,7 @@ pub const Proc = struct {
     cwd: [:0]u8,
     env: std.ArrayList([:0]u8) = .empty, // the client's environment
     over: std.ArrayList([:0]u8) = .empty, // per-process overrides ("KEY=value")
+    deps: std.ArrayList([:0]u8) = .empty, // names of the processes this one waits for
     cols: u16,
     rows: u16,
     autorestart: bool,
