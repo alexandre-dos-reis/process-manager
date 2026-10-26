@@ -34,6 +34,7 @@ pub const SIGHUP: c_int = 1;
 pub const SIGKILL: c_int = 9;
 pub const SIGPIPE: c_int = 13;
 pub const SIGTERM: c_int = 15;
+pub const SIGCHLD: c_int = if (is_linux) 17 else 20;
 pub const SIGINT: c_int = 2;
 pub const SIG_DFL: usize = 0;
 pub const SIG_IGN: usize = 1;
@@ -71,6 +72,7 @@ pub extern "c" fn fork() c_int;
 pub extern "c" fn forkpty(amaster: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const Winsize) c_int;
 pub extern "c" fn setsid() c_int;
 pub extern "c" fn dup2(a: c_int, b: c_int) c_int;
+pub extern "c" fn pipe(fds: *[2]c_int) c_int;
 pub extern "c" fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
 pub extern "c" fn _exit(code: c_int) noreturn;
 pub extern "c" fn exit(code: c_int) noreturn;
@@ -85,8 +87,12 @@ pub extern "c" fn __errno_location() *c_int;
 pub extern "c" fn __error() *c_int;
 pub extern "c" fn _NSGetExecutablePath(buf: [*]u8, size: *u32) c_int;
 
+pub fn errnoPtr() *c_int {
+    return if (is_linux) __errno_location() else __error();
+}
+
 pub fn errno() c_int {
-    return if (is_linux) __errno_location().* else __error().*;
+    return errnoPtr().*;
 }
 
 pub fn nowMs() i64 {

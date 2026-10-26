@@ -65,6 +65,17 @@ zvisor restart flaky       # sort de l'état « failed » (après 6 plantages ra
 zvisor down
 ```
 
+## Mesurer CPU et RAM
+
+```sh
+examples/bench.sh                    # Linux uniquement (lit /proc), ~40 s
+NOLOG=1 examples/bench.sh            # même mesure sans écriture de logs sur disque
+```
+
+Il rapporte, pour le démon : réveils par seconde et CPU au repos, RAM, temps d'un
+`zvisor ls`, puis le CPU par Mo de sortie traité quand un processus écrit en continu
+(sans suiveur, avec `logs -f flood`, avec `logs -f` global).
+
 ## Test automatique
 
 ```sh

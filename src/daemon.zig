@@ -11,7 +11,7 @@ const common = @import("common.zig");
 const Buf = common.Buf;
 const gpa = common.gpa;
 
-const RING_KEEP: usize = 256 * 1024;
+const RING_MAX: usize = 128 * 1024; // history kept per process
 const LOG_ROTATE: usize = 10 * 1024 * 1024;
 const KILL_GRACE_MS: i64 = 5000;
 const QUICK_EXIT_MS: i64 = 3000;
@@ -37,8 +37,9 @@ const Style = struct {
 
 // ---------------------------------------------------------------- formatter
 
-/// Inserts "name |" at the start of each line while tracking the active SGR
-/// (color) state so it can be restored after the prefix. Never drops a byte.
+/// Tracks line, escape-sequence and color (SGR) state over a byte stream. With
+/// `with_out`, copies the bytes to `out` and inserts `prefix` (then the active
+/// color) at the start of each line. Never drops or changes a byte.
 const Fmt = struct {
     at_line_start: bool = true,
     esc: u8 = 0, // 0 = text, 1 = after ESC, 2 = inside CSI
@@ -46,13 +47,6 @@ const Fmt = struct {
     csi_len: usize = 0,
     sgr: [256]u8 = undefined,
     sgr_len: usize = 0,
-
-    fn writePrefix(self: *Fmt, out: *Buf, name: []const u8, width: usize, color: u8) void {
-        out.print("\x1b[0m\x1b[1;{d}m{s}", .{ color, name });
-        if (width > name.len) out.appendNTimes(' ', width - name.len);
-        out.append(" |\x1b[0m ");
-        out.append(self.sgr[0..self.sgr_len]);
-    }
 
     fn applySgr(self: *Fmt) void {
         const params = self.csi[0..self.csi_len];
@@ -73,8 +67,9 @@ const Fmt = struct {
         self.sgr_len += need;
     }
 
-    fn run(self: *Fmt, out: *Buf, name: []const u8, width: usize, color: u8, bytes: []const u8) void {
-        for (bytes) |b| {
+    fn runImpl(self: *Fmt, comptime with_out: bool, out: *Buf, prefix: []const u8, bytes: []const u8) void {
+        var span: usize = 0; // start of the bytes not yet copied to `out`
+        for (bytes, 0..) |b, i| {
             if (self.esc != 0 and b < 0x20 and b != 0x1b) self.esc = 0; // malformed sequence
             if (self.esc == 0) {
                 if (b == '\r' or b == '\n') {
@@ -82,28 +77,97 @@ const Fmt = struct {
                 } else if (b == 0x1b) {
                     self.esc = 1;
                     self.csi_len = 0;
-                } else if (b >= 0x20 or b == '\t') {
-                    if (self.at_line_start) {
-                        self.writePrefix(out, name, width, color);
-                        self.at_line_start = false;
+                } else if ((b >= 0x20 or b == '\t') and self.at_line_start) {
+                    if (with_out) {
+                        out.append(bytes[span..i]);
+                        span = i;
+                        out.append(prefix);
+                        out.append(self.sgr[0..self.sgr_len]);
                     }
+                    self.at_line_start = false;
                 }
-                out.appendByte(b);
+            } else if (self.esc == 1) {
+                self.esc = if (b == '[') 2 else 0;
+            } else if (b >= 0x40 and b <= 0x7e) {
+                if (b == 'm') self.applySgr();
+                self.esc = 0;
+            } else if (self.csi_len < self.csi.len) {
+                self.csi[self.csi_len] = b;
+                self.csi_len += 1;
             } else {
-                out.appendByte(b);
-                if (self.esc == 1) {
-                    self.esc = if (b == '[') 2 else 0;
-                } else if (b >= 0x40 and b <= 0x7e) {
-                    if (b == 'm') self.applySgr();
-                    self.esc = 0;
-                } else if (self.csi_len < self.csi.len) {
-                    self.csi[self.csi_len] = b;
-                    self.csi_len += 1;
-                } else {
-                    self.esc = 0;
-                }
+                self.esc = 0;
             }
         }
+        if (with_out) out.append(bytes[span..]);
+    }
+
+    fn run(self: *Fmt, out: *Buf, prefix: []const u8, bytes: []const u8) void {
+        self.runImpl(true, out, prefix, bytes);
+    }
+
+    /// Update the state only (no output).
+    fn scan(self: *Fmt, bytes: []const u8) void {
+        var unused: Buf = .{};
+        self.runImpl(false, &unused, "", bytes);
+    }
+};
+
+/// Fixed-size circular history. Starts tiny and grows (up to RING_MAX) only when
+/// a process actually produces output.
+const Ring = struct {
+    data: []u8 = &.{},
+    head: usize = 0, // index of the oldest byte
+    len: usize = 0,
+
+    fn deinit(self: *Ring) void {
+        if (self.data.len > 0) gpa.free(self.data);
+        self.* = .{};
+    }
+
+    fn grow(self: *Ring, need: usize) void {
+        if (need <= self.data.len or self.data.len >= RING_MAX) return;
+        var cap: usize = if (self.data.len == 0) 4096 else self.data.len;
+        while (cap < need and cap < RING_MAX) cap *= 2;
+        cap = @min(cap, RING_MAX);
+        const nd = gpa.alloc(u8, cap) catch @panic("oom");
+        const first = @min(self.len, self.data.len - self.head);
+        @memcpy(nd[0..first], self.data[self.head..][0..first]);
+        @memcpy(nd[first..self.len], self.data[0 .. self.len - first]);
+        if (self.data.len > 0) gpa.free(self.data);
+        self.data = nd;
+        self.head = 0;
+    }
+
+    fn append(self: *Ring, bytes: []const u8) void {
+        if (bytes.len == 0) return;
+        const b = if (bytes.len > RING_MAX) bytes[bytes.len - RING_MAX ..] else bytes;
+        self.grow(self.len + b.len);
+        const cap = self.data.len;
+        if (self.len + b.len > cap) {
+            const drop = self.len + b.len - cap;
+            self.head = (self.head + drop) % cap;
+            self.len -= drop;
+        }
+        const tail = (self.head + self.len) % cap;
+        const first = @min(b.len, cap - tail);
+        @memcpy(self.data[tail..][0..first], b[0..first]);
+        @memcpy(self.data[0 .. b.len - first], b[first..]);
+        self.len += b.len;
+    }
+
+    fn at(self: *const Ring, i: usize) u8 {
+        return self.data[(self.head + i) % self.data.len];
+    }
+
+    /// Append the history from logical index `start` to the end.
+    fn appendTo(self: *const Ring, start: usize, out: *Buf) void {
+        if (start >= self.len) return;
+        const cap = self.data.len;
+        const s = (self.head + start) % cap;
+        const n = self.len - start;
+        const first = @min(n, cap - s);
+        out.append(self.data[s..][0..first]);
+        out.append(self.data[0 .. n - first]);
     }
 };
 
@@ -136,8 +200,11 @@ const Proc = struct {
     restart_pending: bool = false,
     remove_when_dead: bool = false,
 
-    ring: Buf = .{},
+    ring: Ring = .{},
     fmt: Fmt = .{},
+    fmt_stale: bool = false, // fmt not kept up to date while nobody follows with prefixes
+    last_byte: u8 = '\n',
+    prefix: []u8 = &.{},
     log_fd: c_int = -1,
     log_bytes: usize = 0,
 };
@@ -167,8 +234,22 @@ var logs_dir: [:0]u8 = undefined;
 var sock_path: [:0]u8 = undefined;
 var scratch: Buf = .{};
 
+var chld_pipe: [2]c_int = .{ -1, -1 };
+
+fn wake() void {
+    const ep = sys.errnoPtr();
+    const saved = ep.*;
+    _ = sys.write(chld_pipe[1], "x", 1);
+    ep.* = saved;
+}
+
 fn onTerm(_: c_int) callconv(.c) void {
     @atomicStore(u8, &got_term, 1, .release);
+    wake();
+}
+
+fn onChld(_: c_int) callconv(.c) void {
+    wake();
 }
 
 // ----------------------------------------------------------------- helpers
@@ -180,10 +261,21 @@ fn findProc(name: []const u8) ?*Proc {
     return null;
 }
 
+fn rebuildPrefix(p: *Proc) void {
+    var b = Buf{};
+    defer b.deinit();
+    b.print("\x1b[0m\x1b[1;{d}m{s}", .{ p.color, p.name });
+    if (max_name > p.name.len) b.appendNTimes(' ', max_name - p.name.len);
+    b.append(" |\x1b[0m ");
+    if (p.prefix.len > 0) gpa.free(p.prefix);
+    p.prefix = gpa.dupe(u8, b.slice()) catch @panic("oom");
+}
+
 fn recomputeMaxName() void {
     var m: usize = 4;
     for (procs.items) |p| m = @max(m, p.name.len);
     max_name = m;
+    for (procs.items) |p| rebuildPrefix(p);
 }
 
 fn validName(n: []const u8) bool {
@@ -250,39 +342,71 @@ fn queue(c: *Conn, bytes: []const u8) void {
     if (c.out.len - c.out_pos > MAX_CONN_OUT) c.dead = true; // client too slow
 }
 
+fn hasPrefixFollower(p: *Proc) bool {
+    for (conns.items) |c| {
+        if (c.dead) continue;
+        const f = c.follow orelse continue;
+        if (f.prefix and (f.all or f.proc == p)) return true;
+    }
+    return false;
+}
+
+/// Rebuild the formatter state from the history (used when a prefixed follower
+/// shows up after a period where nobody needed it, so the common case stays free).
+fn rebuildFmt(p: *Proc) void {
+    p.fmt = .{};
+    const r = &p.ring;
+    if (r.len == 0) return;
+    const first = @min(r.len, r.data.len - r.head);
+    p.fmt.scan(r.data[r.head..][0..first]);
+    p.fmt.scan(r.data[0 .. r.len - first]);
+}
+
 /// Record and broadcast bytes produced by a process (or a zvisor note).
 fn emit(p: *Proc, bytes: []const u8) void {
+    if (bytes.len == 0) return;
+    const want_fmt = hasPrefixFollower(p);
+    if (want_fmt and p.fmt_stale) {
+        rebuildFmt(p); // before the new bytes are added to the history
+        p.fmt_stale = false;
+    }
     p.ring.append(bytes);
-    if (p.ring.len > RING_KEEP * 2) p.ring.consume(p.ring.len - RING_KEEP);
+    p.last_byte = bytes[bytes.len - 1];
     writeLog(p, bytes);
 
-    scratch.len = 0;
-    p.fmt.run(&scratch, p.name, max_name, p.color, bytes);
+    if (want_fmt) {
+        scratch.len = 0;
+        p.fmt.run(&scratch, p.prefix, bytes);
+    } else {
+        p.fmt_stale = true;
+    }
 
     for (conns.items) |c| {
         const f = c.follow orelse continue;
         if (!f.all and f.proc != p) continue;
         queue(c, if (f.prefix) scratch.slice() else bytes);
     }
+    if (scratch.data.len > 256 * 1024) scratch.deinit();
 }
 
 fn note(p: *Proc, comptime f: []const u8, args: anytype) void {
     var m = Buf{};
     defer m.deinit();
-    if (!p.fmt.at_line_start) m.append("\r\n");
+    if (p.last_byte != '\n' and p.last_byte != '\r') m.append("\r\n");
     m.print(RESET ++ DIM ++ "[zvisor] " ++ f ++ RESET ++ "\r\n", args);
     emit(p, m.slice());
 }
 
 fn backlog(p: *Proc, n: usize, prefix: bool, out: *Buf) void {
-    const data = p.ring.slice();
+    if (n == 0) return;
+    const r = &p.ring;
     var start: usize = 0;
     var count: usize = 0;
-    var i = data.len;
-    if (i > 0 and data[i - 1] == '\n') i -= 1;
+    var i = r.len;
+    if (i > 0 and r.at(i - 1) == '\n') i -= 1;
     while (i > 0) {
         i -= 1;
-        if (data[i] == '\n') {
+        if (r.at(i) == '\n') {
             count += 1;
             if (count == n) {
                 start = i + 1;
@@ -290,12 +414,14 @@ fn backlog(p: *Proc, n: usize, prefix: bool, out: *Buf) void {
             }
         }
     }
-    const chunk = data[start..];
     if (!prefix) {
-        out.append(chunk);
+        r.appendTo(start, out);
     } else {
+        var tmp = Buf{};
+        defer tmp.deinit();
+        r.appendTo(start, &tmp);
         var f: Fmt = .{};
-        f.run(out, p.name, max_name, p.color, chunk);
+        f.run(out, p.prefix, tmp.slice());
     }
 }
 
@@ -308,23 +434,29 @@ fn closeMaster(p: *Proc) void {
     }
 }
 
-fn readPty(p: *Proc) void {
-    var buf: [16384]u8 = undefined;
-    var rounds: usize = 0;
-    while (rounds < 8 and p.master >= 0) : (rounds += 1) {
-        const n = sys.read(p.master, &buf, buf.len);
+/// Reads what the PTY has to say (batched into one emit). Returns true if the
+/// batch buffer filled up, i.e. there may be more to read right away.
+fn readPty(p: *Proc) bool {
+    var buf: [65536]u8 = undefined;
+    var len: usize = 0;
+    var eof = false;
+    while (p.master >= 0 and len < buf.len) {
+        const n = sys.read(p.master, buf[len..].ptr, buf.len - len);
         if (n > 0) {
-            emit(p, buf[0..@intCast(n)]);
+            len += @intCast(n);
             continue;
         }
         if (n < 0) {
             const e = sys.errno();
-            if (e == sys.EAGAIN) return;
+            if (e == sys.EAGAIN) break;
             if (e == sys.EINTR) continue;
         }
-        closeMaster(p); // EOF or EIO: slave side is gone
-        return;
+        eof = true; // EOF or EIO: the slave side is gone
+        break;
     }
+    if (len > 0) emit(p, buf[0..len]);
+    if (eof) closeMaster(p);
+    return len == buf.len;
 }
 
 fn startProc(p: *Proc) void {
@@ -397,7 +529,7 @@ fn stopProc(p: *Proc) void {
 
 fn onExit(p: *Proc, status: c_int, now: i64) void {
     // Drain what is left, then close the PTY.
-    readPty(p);
+    while (readPty(p)) {}
     closeMaster(p);
     // Clean up stragglers left in the process group.
     _ = sys.kill(-p.pid, sys.SIGTERM);
@@ -451,14 +583,18 @@ fn onExit(p: *Proc, status: c_int, now: i64) void {
     note(p, "restarting in {d}s", .{@divTrunc(delay, 1000)});
 }
 
-fn tick(now: i64) void {
+/// `reap` is true when SIGCHLD fired: only then do we ask the kernel about exits.
+fn tick(now: i64, reap: bool) void {
     for (procs.items) |p| {
         if (p.pid > 0) {
-            var st: c_int = 0;
-            const r = sys.waitpid(p.pid, &st, sys.WNOHANG);
-            if (r == p.pid) {
-                onExit(p, st, now);
-            } else if (p.stopping and !p.killed and now >= p.kill_at_ms) {
+            if (reap) {
+                var st: c_int = 0;
+                if (sys.waitpid(p.pid, &st, sys.WNOHANG) == p.pid) {
+                    onExit(p, st, now);
+                    continue;
+                }
+            }
+            if (p.stopping and !p.killed and now >= p.kill_at_ms) {
                 _ = sys.kill(-p.pid, sys.SIGKILL);
                 p.killed = true;
             }
@@ -466,6 +602,25 @@ fn tick(now: i64) void {
             startProc(p);
         }
     }
+}
+
+/// How long poll() may sleep: until the next timer (restart delay, kill grace,
+/// shutdown deadline), or forever when nothing is scheduled.
+fn pollTimeout(now: i64) c_int {
+    var best: i64 = -1;
+    for (procs.items) |p| {
+        var due: i64 = -1;
+        if (p.pid > 0 and p.stopping and !p.killed) due = p.kill_at_ms else if (p.pid == 0 and p.state == .backoff) due = p.next_start_ms;
+        if (due < 0) continue;
+        const d = @max(due - now, 0);
+        if (best < 0 or d < best) best = d;
+    }
+    if (shutting_down) {
+        const d = @max(shutdown_deadline - now, 0);
+        if (best < 0 or d < best) best = d;
+    }
+    if (best < 0) return -1;
+    return @intCast(@min(best + 1, 3_600_000));
 }
 
 // ---------------------------------------------------------------- commands
@@ -547,6 +702,7 @@ fn freeProc(p: *Proc) void {
     freeStr(p.cmd);
     freeStr(p.cwd);
     p.ring.deinit();
+    if (p.prefix.len > 0) gpa.free(p.prefix);
     gpa.destroy(p);
 }
 
@@ -822,6 +978,7 @@ fn tryRequest(c: *Conn) void {
     if (c.in.len < need) return;
     c.got_req = true;
     handleRequest(c, c.in.data[4..need]);
+    c.in.deinit();
 }
 
 fn readConn(c: *Conn) void {
@@ -868,6 +1025,7 @@ fn flush(c: *Conn) void {
     }
     c.out.len = 0;
     c.out_pos = 0;
+    if (c.out.data.len > 64 * 1024) c.out.deinit();
     if (c.close_after_flush) c.dead = true;
 }
 
@@ -956,8 +1114,17 @@ pub fn run(home: [:0]const u8) u8 {
     sys.setCloexec(listen_fd);
 
     _ = sys.signal(sys.SIGPIPE, sys.SIG_IGN);
+
+    // Signals wake poll() through a pipe: with nothing scheduled the daemon sleeps
+    // until a client, a process or a child exit needs it (no periodic wake-ups).
+    if (sys.pipe(&chld_pipe) != 0) return 1;
+    for (chld_pipe) |fd| {
+        sys.setNonblock(fd);
+        sys.setCloexec(fd);
+    }
     _ = sys.signal(sys.SIGTERM, @intFromPtr(&onTerm));
     _ = sys.signal(sys.SIGINT, @intFromPtr(&onTerm));
+    _ = sys.signal(sys.SIGCHLD, @intFromPtr(&onChld));
 
     var fds: std.ArrayList(sys.PollFd) = .empty;
     var poll_procs: std.ArrayList(*Proc) = .empty;
@@ -969,6 +1136,7 @@ pub fn run(home: [:0]const u8) u8 {
         fds.clearRetainingCapacity();
         poll_procs.clearRetainingCapacity();
         fds.append(gpa, .{ .fd = listen_fd, .events = sys.POLLIN, .revents = 0 }) catch @panic("oom");
+        fds.append(gpa, .{ .fd = chld_pipe[0], .events = sys.POLLIN, .revents = 0 }) catch @panic("oom");
         for (conns.items) |c| {
             var ev: c_short = sys.POLLIN;
             if (c.out_pos < c.out.len) ev |= sys.POLLOUT;
@@ -982,18 +1150,24 @@ pub fn run(home: [:0]const u8) u8 {
             }
         }
 
-        _ = sys.poll(fds.items.ptr, @intCast(fds.items.len), 100);
+        _ = sys.poll(fds.items.ptr, @intCast(fds.items.len), pollTimeout(sys.nowMs()));
 
+        var reap = false;
+        if (fds.items[1].revents & readable != 0) {
+            var junk: [64]u8 = undefined;
+            while (sys.read(chld_pipe[0], &junk, junk.len) > 0) {}
+            reap = true;
+        }
         if (fds.items[0].revents & sys.POLLIN != 0) acceptAll(listen_fd);
         for (0..nconns) |i| {
-            if (fds.items[1 + i].revents & readable != 0) readConn(conns.items[i]);
+            if (fds.items[2 + i].revents & readable != 0) readConn(conns.items[i]);
         }
         for (poll_procs.items, 0..) |p, j| {
-            if (fds.items[1 + nconns + j].revents & readable != 0) readPty(p);
+            if (fds.items[2 + nconns + j].revents & readable != 0) _ = readPty(p);
         }
 
         const now = sys.nowMs();
-        tick(now);
+        tick(now, reap);
         for (conns.items) |c| flush(c);
         sweep();
 

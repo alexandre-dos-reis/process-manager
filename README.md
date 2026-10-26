@@ -18,8 +18,8 @@ Des scénarios à lancer (3 processus, couleurs, pannes) et un test automatique 
 ## Compiler
 
 ```sh
-zig build -Dtarget=x86_64-linux-musl      # binaire statique
-zig build -Doptimize=ReleaseSmall         # plus petit
+zig build                       # défaut : ReleaseSmall, strippé, musl statique sous Linux (~270 Ko)
+zig build -Doptimize=fast       # plus rapide, un peu plus gros (debug | safe | fast | small)
 # résultat : zig-out/bin/zvisor
 ```
 

@@ -75,10 +75,15 @@ check "down supprime le socket" '[ ! -S .pm/sock ]'
 echo "== colors : séquences ANSI"
 cd "$TMP/colors" || exit 2
 "$Z" up >/dev/null
+sleep 1
+"$Z" logs -f -n 0 >"$TMP/follow.out" 2>&1 &
+FOLLOW=$!
 check "truecolor intact" '"$Z" logs colors -n 80 | grep -q "${ESC}\[48;2;"'
 check "256 couleurs intactes" '"$Z" logs colors -n 80 | grep -q "${ESC}\[48;5;"'
 check "unicode intact" '"$Z" logs colors -n 80 | grep -q "漢字"'
 check "couleur multi-lignes restaurée après le préfixe" '"$Z" logs -n 80 | grep "ligne 2" | grep -q "${ESC}\[1;35mligne 2"'
+check "couleur ouverte avant l'abonnement restaurée (logs -f tardif)" 'grep -q "${ESC}\[1;35mviolet B" "$TMP/follow.out"'
+kill "$FOLLOW" 2>/dev/null
 "$Z" down >/dev/null
 
 echo "== crashy : pannes"

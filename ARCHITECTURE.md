@@ -100,15 +100,24 @@ changé, il redémarre le processus.
 
 ### Boucle d'événements
 
-Un seul thread, un seul `poll()` (timeout 100 ms) sur : le socket d'écoute, chaque
-connexion client, et le côté maître du PTY de chaque processus. À chaque tour :
+Un seul thread, un seul `poll()` sur : le socket d'écoute, un tube interne, chaque
+connexion client, et le côté maître du PTY de chaque processus.
+
+**Le démon dort tant qu'il n'y a rien à faire** : pas de minuterie périodique. Le délai
+du `poll()` est calculé à partir de la prochaine échéance (relance après plantage,
+délai avant SIGKILL, échéance d'arrêt), ou infini s'il n'y en a aucune. Les signaux
+`SIGCHLD` (un processus s'est terminé), `SIGTERM` et `SIGINT` écrivent un octet dans
+le tube interne, ce qui réveille `poll()` (technique du « self-pipe »). Trois processus
+silencieux entraînent donc **0 réveil**.
+
+À chaque réveil :
 
 1. arrêt demandé par signal ? → `beginShutdown` ;
 2. accepter les nouvelles connexions ;
 3. lire les requêtes des clients (et les exécuter dès qu'elles sont complètes) ;
 4. lire la sortie des PTY ;
-5. `tick` : `waitpid(WNOHANG)` sur chaque processus, escalade SIGKILL, relances
-   programmées ;
+5. `tick` : `waitpid(WNOHANG)` seulement si `SIGCHLD` a été reçu, escalade SIGKILL,
+   relances programmées ;
 6. écrire les tampons de sortie des clients ;
 7. `sweep` : fermer les connexions mortes, libérer les processus à supprimer.
 
@@ -144,8 +153,10 @@ Le but : ne jamais perdre ni abîmer une couleur. Comme le processus écrit dans
 il croit parler à un terminal et garde ses couleurs. Chaque morceau lu passe par
 `emit()`, qui fait trois choses :
 
-1. **Tampon mémoire** (`ring`) : on garde environ 256 Ko par processus ; quand il atteint
-   512 Ko, on supprime le début. `logs` extrait les N dernières lignes de ce tampon.
+1. **Tampon mémoire** (`ring`) : historique circulaire de 128 Ko au plus par processus.
+   Il démarre à 4 Ko et ne grossit que si le processus produit vraiment de la sortie ;
+   quand il est plein, les octets les plus anciens sont écrasés (aucune recopie).
+   `logs` extrait les N dernières lignes de ce tampon.
 2. **Fichier** `.pm/logs/<nom>.log` : octets bruts (avec les séquences ANSI), rotation à
    10 Mo vers `.log.1`. À relire avec `less -R`.
 3. **Abonnés** (`logs -f`) : les octets sont copiés dans le tampon d'envoi de chaque
@@ -158,7 +169,12 @@ Deux modes de diffusion :
 - **Tous les processus** (`logs`, `logs -f`) : on insère un préfixe `nom |` coloré en
   début de ligne. C'est le seul octet ajouté ; aucun octet n'est retiré ni modifié.
 
-Le préfixe est géré par une petite machine à états (`Fmt`) :
+Le préfixe est géré par une petite machine à états (`Fmt`). Pour ne pas coûter de CPU
+quand personne ne l'utilise, **elle ne tourne que si un `logs -f` en vue globale est
+connecté** ; sinon le démon note que l'état est « périmé ». Quand un tel suiveur arrive,
+l'état (début de ligne, couleur active) est reconstruit d'un coup en relisant
+l'historique, avant que les nouveaux octets ne soient traités. La machine travaille
+par blocs d'octets (elle ne copie que ce qui précède un préfixe) :
 
 - Il n'est inséré qu'au **premier caractère imprimable** d'une ligne, pas avant une
   séquence d'échappement. Les séquences de début de ligne (couleurs, effacement…)
@@ -176,9 +192,30 @@ Le préfixe est géré par une petite machine à états (`Fmt`) :
 ## Connexions clients
 
 Chaque connexion a un tampon d'entrée (la requête) et un tampon d'envoi non bloquant.
-Si un client lent laisse s'accumuler plus de 8 Mo, il est déconnecté plutôt que de
-bloquer le démon ou de grossir sans limite. Une connexion normale est fermée dès
-que la réponse est écrite (`close_after_flush`).
+Le tampon d'entrée est libéré dès que la requête est traitée, et le tampon d'envoi dès
+qu'il est vidé s'il a dépassé 64 Ko. Si un client lent laisse s'accumuler plus de 8 Mo,
+il est déconnecté plutôt que de bloquer le démon ou de grossir sans limite. Une connexion
+normale est fermée dès que la réponse est écrite (`close_after_flush`).
+
+## Consommation
+
+Mesures sur Linux avec `examples/bench.sh` (3 processus de `examples/basic`, binaire
+`small`, musl statique) :
+
+| | Valeur |
+|---|---|
+| Binaire | ~270 Ko |
+| RAM du démon au repos | ~500 Ko |
+| RAM après un flot de sortie de 5 s à ~50 Mo/s | ~900 Ko (pic 950 Ko) |
+| Réveils avec des processus silencieux | 0 |
+| CPU par Mo de sortie traité | ~5 à 7 ms (jusqu'à ~13 ms avec `logs -f` global) |
+| Commande client (`zvisor ls`) | ~0,4 ms |
+
+Ce qui fait ces chiffres : pas de minuterie (self-pipe), `waitpid` uniquement sur
+`SIGCHLD`, formatage des couleurs seulement à la demande, historique circulaire à
+croissance paresseuse, lectures du PTY regroupées en un seul traitement (jusqu'à 64 Ko)
+et tampons de connexion libérés après usage. L'écriture des logs sur disque ajoute
+environ 25 % de CPU sous un flot soutenu (rien au repos).
 
 ## Arrêt
 

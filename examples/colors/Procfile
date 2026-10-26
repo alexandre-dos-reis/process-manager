@@ -2,3 +2,6 @@
 # pour comparer. Lance `zvisor logs` : rien ne doit être tronqué ni déformé.
 colors: sh ./colors.sh
 plain:  while true; do echo "pas de couleur ici"; sleep 2; done
+# Ouvre une couleur, ne la ferme que 4 s plus tard : sert à vérifier qu'un `logs -f`
+# lancé entre-temps restaure bien la couleur après le préfixe.
+purple: printf '\033[1;35mviolet A\n'; sleep 4; printf 'violet B\033[0m\n'; sleep 3600
