@@ -11,6 +11,8 @@ supervisor (un démon + une CLI qui lui parle par socket Unix), en plus simple.
 - Redémarrage automatique avec backoff, arrêt propre (SIGTERM puis SIGKILL après 5 s,
   sur tout le groupe de processus), logs en mémoire et sur disque.
 
+Le fonctionnement interne est décrit dans [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Compiler
 
 ```sh
