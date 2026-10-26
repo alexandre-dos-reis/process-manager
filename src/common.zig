@@ -88,18 +88,38 @@ pub fn dupeZ(s: []const u8) [:0]u8 {
     return joinZ(&.{s});
 }
 
-/// ~/.zvisor (override with $ZVISOR_HOME).
+/// State directory: $ZVISOR_HOME if set, else the nearest `.pm` directory that
+/// has a live socket in the current directory or one of its parents (like git),
+/// else `./.pm`. Nothing is ever written to the user's home directory.
 pub fn homeDir() [:0]u8 {
-    if (sys.getenv("ZVISOR_HOME")) |p| return dupeZ(std.mem.span(p));
-    if (sys.getenv("HOME")) |h| return joinZ(&.{ std.mem.span(h), "/.zvisor" });
-    var tmp: [32]u8 = undefined;
-    const uid = std.fmt.bufPrint(&tmp, "{d}", .{sys.getuid()}) catch "0";
-    return joinZ(&.{ "/tmp/zvisor-", uid });
+    var buf: [4096]u8 = undefined;
+    const cwd_p = sys.getcwd(&buf, buf.len) orelse return dupeZ(".pm");
+    const cwd = std.mem.span(cwd_p);
+
+    if (sys.getenv("ZVISOR_HOME")) |p| {
+        const v = std.mem.span(p);
+        if (v.len > 0 and v[0] == '/') return dupeZ(v);
+        return joinZ(&.{ cwd, "/", v });
+    }
+
+    var dir: []const u8 = cwd;
+    while (true) {
+        const probe = joinZ(&.{ if (dir.len == 1) "" else dir, "/.pm/sock" });
+        defer gpa.free(probe);
+        if (sys.access(probe.ptr, 0) == 0) return joinZ(&.{ if (dir.len == 1) "" else dir, "/.pm" });
+        if (dir.len <= 1) break;
+        const slash = std.mem.lastIndexOfScalar(u8, dir, '/') orelse break;
+        dir = if (slash == 0) "/" else dir[0..slash];
+    }
+    return joinZ(&.{ if (cwd.len == 1) "" else cwd, "/.pm" });
 }
 
-/// Connect to the daemon socket. Returns -1 on failure.
-pub fn connectTo(path: []const u8) c_int {
-    const addr = sys.makeAddr(path) orelse return -1;
+/// Connect to the daemon whose state directory is `home`. Returns -1 on failure.
+/// This chdir()s into `home` and connects to the relative path "sock", which
+/// sidesteps the ~108 byte limit on Unix socket paths for deep project trees.
+pub fn connectIn(home: [:0]const u8) c_int {
+    if (sys.chdir(home.ptr) != 0) return -1;
+    const addr = sys.makeAddr("sock") orelse return -1;
     const fd = sys.socket(sys.AF_UNIX, sys.SOCK_STREAM, 0);
     if (fd < 0) return -1;
     if (sys.connect(fd, &addr, @sizeOf(sys.SockaddrUn)) != 0) {

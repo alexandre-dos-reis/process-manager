@@ -45,9 +45,17 @@ de travail est celui du Procfile.
 
 ## Où sont les données
 
-`~/.zvisor` (ou `$ZVISOR_HOME`) : `sock`, `daemon.log`, `logs/<nom>.log`
-(sortie brute avec couleurs, rotation à 10 Mo → `.log.1`). Pour relire un log
-avec couleurs : `less -R ~/.zvisor/logs/web.log`.
+Rien n'est écrit dans le home. L'état est dans un dossier **`.pm` du répertoire
+courant** : `sock`, `daemon.log`, `logs/<nom>.log` (sortie brute avec couleurs,
+rotation à 10 Mo → `.log.1`) et un `.gitignore` interne (`*`) pour ne pas le
+committer. Pour relire un log avec couleurs : `less -R .pm/logs/web.log`.
+
+- Il y a **un démon par projet** : deux dossiers différents = deux gestionnaires
+  indépendants.
+- Comme git, `zvisor` remonte les dossiers parents pour trouver un `.pm` actif :
+  `zvisor ls` fonctionne depuis un sous-dossier du projet. `add` / `up` créent
+  `.pm` dans le dossier où tu les lances s'il n'y en a pas.
+- `$ZVISOR_HOME` force un autre emplacement.
 
 ## Limites connues
 

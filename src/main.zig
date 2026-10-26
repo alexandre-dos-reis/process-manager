@@ -56,7 +56,7 @@ fn usage(color: bool) void {
     _ = writeAll(1,
         \\One argument after NAME is run by a shell as-is ("a | b" works);
         \\several arguments are quoted individually.
-        \\State lives in ~/.zvisor (override with $ZVISOR_HOME).
+        \\State lives in ./.pm (nearest parent .pm wins; override with $ZVISOR_HOME).
     );
     _ = writeAll(1, r);
     _ = writeAll(1, "\n");
@@ -98,16 +98,11 @@ fn exePath(buf: []u8) ?[:0]const u8 {
     }
 }
 
-fn socketPath(home: []const u8) [:0]u8 {
-    return common.joinZ(&.{ home, "/sock" });
-}
-
 fn startDaemon(home: [:0]const u8) c_int {
     var exe_buf: [4096]u8 = undefined;
     const exe = exePath(&exe_buf) orelse return -1;
     _ = sys.mkdir(home.ptr, 0o700);
     const log_path = common.joinZ(&.{ home, "/daemon.log" });
-    const sock = socketPath(home);
 
     const pid = sys.fork();
     if (pid < 0) return -1;
@@ -120,7 +115,7 @@ fn startDaemon(home: [:0]const u8) c_int {
             _ = sys.dup2(lf, 1);
             _ = sys.dup2(lf, 2);
         }
-        const argv = [_:null]?[*:0]const u8{ exe.ptr, "daemon" };
+        const argv = [_:null]?[*:0]const u8{ exe.ptr, "daemon", home.ptr };
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(sys.environ);
         _ = sys.execve(exe.ptr, &argv, envp);
         sys._exit(127);
@@ -128,7 +123,7 @@ fn startDaemon(home: [:0]const u8) c_int {
 
     var tries: usize = 0;
     while (tries < 50) : (tries += 1) {
-        const fd = common.connectTo(sock);
+        const fd = common.connectIn(home);
         if (fd >= 0) return fd;
         _ = sys.usleep(100_000);
     }
@@ -139,8 +134,7 @@ const Mode = enum { autostart, need_daemon, optional };
 
 /// Sends the request and prints the answer. Returns the process exit code.
 fn transact(home: [:0]const u8, req: *Req, mode: Mode) u8 {
-    const sock = socketPath(home);
-    var fd = common.connectTo(sock);
+    var fd = common.connectIn(home);
     if (fd < 0) switch (mode) {
         .autostart => {
             fd = startDaemon(home);
@@ -428,7 +422,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     const verb = argv[0];
     const rest = argv[1..];
 
-    if (eq(verb, "daemon")) return daemon.run(home);
+    if (eq(verb, "daemon")) return daemon.run(if (rest.len > 0) common.dupeZ(rest[0]) else home);
     if (eq(verb, "-h") or eq(verb, "--help") or eq(verb, "help")) {
         usage(color);
         return 0;

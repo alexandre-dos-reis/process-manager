@@ -925,15 +925,26 @@ fn finish() noreturn {
 
 pub fn run(home: [:0]const u8) u8 {
     _ = sys.mkdir(home.ptr, 0o700);
+    {
+        // Keep the state directory out of version control.
+        const gi = common.joinZ(&.{ home, "/.gitignore" });
+        defer gpa.free(gi);
+        const fd = sys.open(gi.ptr, sys.O_WRONLY | sys.O_CREAT | sys.O_EXCL, @as(c_uint, 0o644));
+        if (fd >= 0) {
+            _ = sys.write(fd, "*\n", 2);
+            _ = sys.close(fd);
+        }
+    }
     logs_dir = common.joinZ(&.{ home, "/logs" });
     _ = sys.mkdir(logs_dir.ptr, 0o700);
-    sock_path = common.joinZ(&.{ home, "/sock" });
+    sock_path = common.dupeZ("sock"); // relative: we live in the state directory
 
-    const probe = common.connectTo(sock_path);
+    const probe = common.connectIn(home); // also chdir()s into `home`
     if (probe >= 0) {
         _ = sys.close(probe);
         return 0; // a daemon is already serving this socket
     }
+    if (sys.chdir(home.ptr) != 0) return 1;
     _ = sys.unlink(sock_path.ptr);
 
     const addr = sys.makeAddr(sock_path) orelse return 1;

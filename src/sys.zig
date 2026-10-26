@@ -19,6 +19,7 @@ pub const O_RDONLY: c_int = 0;
 pub const O_WRONLY: c_int = 1;
 pub const O_CREAT: c_int = if (is_linux) 0o100 else 0x200;
 pub const O_APPEND: c_int = if (is_linux) 0o2000 else 0x8;
+pub const O_EXCL: c_int = if (is_linux) 0o200 else 0x800;
 pub const O_NONBLOCK: c_int = if (is_linux) 0o4000 else 0x4;
 
 pub const F_GETFL: c_int = 3;
@@ -56,6 +57,7 @@ pub extern "c" fn poll(fds: [*]PollFd, n: nfds_t, timeout: c_int) c_int;
 pub extern "c" fn fcntl(fd: c_int, cmd: c_int, ...) c_int;
 pub extern "c" fn ioctl(fd: c_int, req: c_ulong, ...) c_int;
 pub extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
+pub extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 pub extern "c" fn unlink(path: [*:0]const u8) c_int;
 pub extern "c" fn rename(from: [*:0]const u8, to: [*:0]const u8) c_int;
 pub extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
