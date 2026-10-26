@@ -54,7 +54,8 @@ zpawn down                  # arrête tout et quitte le démon
 - `logs SERVICE` renvoie les octets tels quels, sans préfixe ; sans service, les
   lignes sont préfixées pour distinguer les sources.
 
-`zpawn up` relance seulement ce qui a changé (« unchanged » sinon).
+`zpawn up` est déclaratif : il relance seulement ce qui a changé (« unchanged » sinon) et
+**arrête puis oublie les processus qui ne figurent plus dans le fichier**.
 
 ### Le fichier `zpawn.yaml`
 
@@ -101,8 +102,6 @@ committer. Pour relire un log avec couleurs : `less -R .pm/logs/web.log`.
 - Le préfixe `nom |` est ajouté à chaque ligne en mode « tous les processus » ;
   la couleur active est réappliquée après le préfixe. Les lignes de plusieurs
   processus qui se mélangent au milieu d'une ligne ne sont pas réordonnées.
-- Un processus retiré de `zpawn.yaml` reste connu du démon jusqu'à `zpawn down` (`up`
-  ajoute et met à jour, il ne supprime pas).
 - Le parseur YAML ne gère pas les blocs `|`/`>` et abandonne en silence les entrées qui
   suivent une commande non quotée contenant `${...}` : mets la commande entre guillemets.
 

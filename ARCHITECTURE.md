@@ -99,7 +99,8 @@ envoie `stop`, `restart` sans nom envoie `restart all`).
 dossier du fichier, et envoie un seul `add` avec `replace=1`. Les variables `env` du YAML
 sont des surcharges par processus, appliquées par-dessus l'environnement du client.
 Si une définition identique (commande, cwd, surcharges) tourne déjà, le démon répond « unchanged » ; si elle a
-changé, il redémarre le processus.
+changé, il redémarre le processus. Avec `replace=1`, tout processus absent de la requête
+est arrêté puis supprimé (`remove_when_dead`).
 
 **`up` attaché** : après le `add`, le client ouvre une seconde connexion `logs`
 (tous les services, `follow`, 0 ligne d'historique) et fait un `poll()` sur cette

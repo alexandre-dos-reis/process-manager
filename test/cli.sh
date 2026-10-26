@@ -49,9 +49,12 @@ now "up -d relancé : unchanged" '"$Z" up -d | grep -c unchanged | grep -q 2'
 now "sans argument : tableau d'état" '"$Z" | grep -q worker'
 now "depuis un sous-dossier" 'mkdir -p sub && (cd sub && "$Z" ls | grep -q web)'
 now "up -f chemin explicite" 'printf "processes:\n  extra: sleep 600\n" > "$TMP/other.yaml" && "$Z" up -d -f "$TMP/other.yaml" | grep -q "extra .*started"'
+now "up retire ce qui n'est plus dans le fichier" '"$Z" up -d -f "$TMP/other.yaml" >/dev/null; "$Z" ls | grep -q extra'
+check "web et worker ont disparu de la liste" '! "$Z" ls | grep -q "web\|worker"'
+"$Z" up -d >/dev/null
+check "retour au zpawn.yaml : 2 processus, extra retiré" '[ "$(state_of web)" = running ] && [ "$(state_of worker)" = running ] && ! "$Z" ls | grep -q extra'
 now "up -f YAML invalide : erreur lisible" 'printf "processes:\n  x:\n    nope: 1\n" > "$TMP/bad.yaml"; "$Z" up -d -f "$TMP/bad.yaml" 2>&1 | grep -q "unknown key .nope."'
 now "up -f fichier absent" '"$Z" up -d -f "$TMP/absent.yaml" 2>&1 | grep -q "cannot read"'
-"$Z" kill extra >/dev/null
 
 echo "== logs"
 check "logs SERVICE : sortie brute, sans préfixe" '"$Z" logs worker | grep -q "^working" && ! "$Z" logs worker | grep -q "worker  *|"'
@@ -70,7 +73,7 @@ check "kill SERVICE : worker arrêté" '[ "$(state_of worker)" = stopped ]'
 now "kill SERVICE : web intact" '[ "$(state_of web)" = running ] && [ "$(pid_of web)" = "$before_web" ]'
 now "kill d'un service inconnu" '"$Z" kill ghost 2>&1 | grep -q "no process named"'
 "$Z" kill >/dev/null
-check "kill sans argument : tout est arrêté" '[ "$(state_of web)" = stopped ] && [ "$(state_of worker)" = stopped ] && [ "$(state_of extra)" = stopped ]'
+check "kill sans argument : tout est arrêté" '[ "$(state_of web)" = stopped ] && [ "$(state_of worker)" = stopped ]'
 now "le démon reste en vie après kill" '"$Z" ls | grep -q web'
 
 echo "== restart"
@@ -81,7 +84,7 @@ old=$(pid_of worker)
 "$Z" restart worker >/dev/null
 check "restart change le PID" '[ "$(pid_of worker)" != "$old" ] && [ "$(pid_of worker)" != - ]'
 "$Z" restart >/dev/null
-check "restart sans argument : tout tourne" '[ "$(state_of web)" = running ] && [ "$(state_of worker)" = running ] && [ "$(state_of extra)" = running ]'
+check "restart sans argument : tout tourne" '[ "$(state_of web)" = running ] && [ "$(state_of worker)" = running ]'
 now "restart d'un service inconnu" '"$Z" restart ghost 2>&1 | grep -q "no process named"'
 
 echo "== down"

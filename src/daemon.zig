@@ -810,6 +810,25 @@ fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
             report(out, st, p, "started (pid {d})", .{p.pid});
         }
     }
+
+    // `up` is declarative: whatever the file no longer lists is stopped and forgotten.
+    if (replace) {
+        for (procs.items) |p| {
+            if (p.remove_when_dead) continue;
+            var listed = false;
+            var j: usize = 6;
+            k = 0;
+            while (k < n) : (k += 1) {
+                if (std.mem.eql(u8, a[j], p.name)) listed = true;
+                j += 5 + (std.fmt.parseInt(usize, a[j + 4], 10) catch 0);
+            }
+            if (!listed) {
+                p.remove_when_dead = true;
+                stopProc(p);
+                report(out, st, p, "removed (not in the file anymore)", .{});
+            }
+        }
+    }
 }
 
 fn cmdAction(out: *Buf, ok: *bool, st: Style, verb: []const u8, target: []const u8) void {
