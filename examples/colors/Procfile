@@ -1,0 +1,4 @@
+# Un processus qui affiche toutes sortes de séquences ANSI, et un processus sans couleur
+# pour comparer. Lance `zvisor logs` : rien ne doit être tronqué ni déformé.
+colors: sh ./colors.sh
+plain:  while true; do echo "pas de couleur ici"; sleep 2; done

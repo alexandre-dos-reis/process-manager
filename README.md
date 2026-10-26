@@ -12,6 +12,8 @@ supervisor (un démon + une CLI qui lui parle par socket Unix), en plus simple.
   sur tout le groupe de processus), logs en mémoire et sur disque.
 
 Le fonctionnement interne est décrit dans [ARCHITECTURE.md](ARCHITECTURE.md).
+Des scénarios à lancer (3 processus, couleurs, pannes) et un test automatique sont dans
+[examples/](examples/README.md).
 
 ## Compiler
 
