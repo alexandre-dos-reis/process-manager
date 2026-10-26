@@ -6,7 +6,7 @@ C'est le modèle de supervisor (`supervisord` + `supervisorctl`), avec un protoc
 texte minimal à la place de XML-RPC.
 
 ```
-  zpawn add web ...                                   .pm/
+  zpawn up / up -d                                    .pm/
   zpawn logs -f      ┌──────────────┐  socket Unix   ├── sock
   zpawn ls     ────► │   client     │ ─────────────► ├── daemon.log
                       │ (main.zig)   │ ◄───────────── └── logs/web.log
@@ -24,10 +24,11 @@ texte minimal à la place de XML-RPC.
 
 | Fichier | Rôle |
 |---|---|
-| `src/main.zig` | Client : parsing de la CLI, lecture de `zpawn.yaml` (`src/config.zig`, via la bibliothèque YAML de `vendor/`), démarrage automatique du démon, envoi de la requête, affichage de la réponse. Aiguille aussi `zpawn daemon` vers le démon. |
+| `src/main.zig` | Client : sous-commandes (`init`, `up`, `down`, `kill`, `restart`, `logs`, `ls`) analysées par zig-clap (`vendor/zig-clap/`), mode attaché de `up` (diffusion des logs, Ctrl-C → `down`), lecture de `zpawn.yaml` (`src/config.zig`, via la bibliothèque YAML de `vendor/`), démarrage automatique du démon, envoi de la requête, affichage de la réponse. Aiguille aussi `zpawn daemon` vers le démon. |
 | `src/daemon.zig` | Démon : état des processus, PTY, boucle d'événements, commandes, tampon de sortie, formatage des préfixes. |
 | `src/common.zig` | Utilitaires partagés : tampon d'octets extensible (`Buf`), concaténation de chemins, recherche du dossier `.pm`, connexion au socket. |
 | `src/sys.zig` | Déclarations libc écrites à la main (`forkpty`, `poll`, sockets, `waitpid`…) et constantes Linux/macOS. |
+| `test/` | Tests : `config_test.zig` (unitaires), `cli.sh`, `examples.sh`, `run.sh`. Jamais de tests dans `src/`. |
 
 Le code évite volontairement la stdlib de Zig pour tout ce qui touche au système
 (processus, fichiers, sockets) : cette partie évolue vite d'une version à l'autre,
@@ -59,7 +60,7 @@ Un dossier **`.pm` dans le répertoire courant** (jamais dans le home) :
 ## Vie d'une commande
 
 1. Le client calcule `home`, puis `connectIn(home)`.
-2. Si le socket ne répond pas : pour `add` et `up` il lance le démon (voir plus bas) ;
+2. Si le socket ne répond pas : pour `up` il lance le démon (voir plus bas) ;
    pour les autres commandes il affiche une erreur (ou « no processes » pour `ls`).
 3. Il envoie une requête, puis lit la réponse jusqu'à la fermeture de la connexion
    et la recopie telle quelle sur stdout (stderr si c'est une erreur).
@@ -91,11 +92,21 @@ Réponse : **un octet de statut** (`O` ou `E`) suivi du texte, éventuellement c
 Le démon ferme la connexion une fois la réponse envoyée, sauf pour `logs -f` (flux
 continu) et `down` (reste ouverte jusqu'à l'arrêt complet).
 
+Les verbes `add`, `start`, `stop`, `rm` sont **internes** (ce n'est pas la CLI : `kill`
+envoie `stop`, `restart` sans nom envoie `restart all`).
+
 `up` n'a pas de verbe propre : le client lit `zpawn.yaml`, résout les `cwd` relatifs au
 dossier du fichier, et envoie un seul `add` avec `replace=1`. Les variables `env` du YAML
 sont des surcharges par processus, appliquées par-dessus l'environnement du client.
 Si une définition identique (commande, cwd, surcharges) tourne déjà, le démon répond « unchanged » ; si elle a
 changé, il redémarre le processus.
+
+**`up` attaché** : après le `add`, le client ouvre une seconde connexion `logs`
+(tous les services, `follow`, 0 ligne d'historique) et fait un `poll()` sur cette
+connexion et sur un tube alimenté par le gestionnaire SIGINT/SIGTERM. Au Ctrl-C il
+ferme le flux, envoie `down` et attend l'arrêt complet ; si le démon disparaît avant
+(un autre terminal a fait `down`), la connexion se ferme et le client sort. Le démon,
+lui, est dans sa propre session (`setsid`) : le Ctrl-C du terminal ne l'atteint pas.
 
 ## Le démon
 
@@ -130,9 +141,9 @@ Rien n'est libéré en plein milieu d'un tour : les suppressions sont marquées
 Chaque processus (`Proc`) est lancé avec **`forkpty`** : il reçoit un pseudo-terminal
 comme stdin/stdout/stderr et devient chef de sa propre session et de son groupe.
 Il tourne via `/bin/sh -c "<commande>"` (les pipes, `&&` et variables marchent),
-dans le `cwd` demandé, avec l'**environnement du client** qui a fait `add`/`up`
+dans le `cwd` demandé, avec l'**environnement du client** qui a fait `up`
 (PATH inclus). `TERM` vaut `xterm-256color` s'il manque ou vaut `dumb`. La taille du
-PTY est celle du terminal du client au moment de l'`add`.
+PTY est celle du terminal du client au moment du `up`.
 
 États : `running`, `stopped`, `exited`, `backoff` (attente avant relance), `failed`.
 

@@ -11,13 +11,13 @@ export PATH="$PWD/zig-out/bin:$PATH"
 ```
 
 Chaque dossier d'exemple a son propre démon et son propre `.pm`, donc on peut les
-lancer l'un après l'autre sans qu'ils se mélangent. Termine toujours par `zpawn down`.
+lancer l'un après l'autre sans qu'ils se mélangent. Termine toujours par `zpawn down` (ou lance `zpawn up` sans `-d` et fais Ctrl-C).
 
 ## 1. `basic/` : trois processus
 
 ```sh
 cd examples/basic
-zpawn up                  # web, api, worker démarrent
+zpawn up -d               # web, api, worker démarrent en arrière-plan
 zpawn                     # tableau d'état
 zpawn logs -f             # les trois mélangés, avec le préfixe « nom | » coloré
 ```
@@ -28,19 +28,19 @@ jobs cyan du worker. Puis, dans un autre terminal ouvert dans le même dossier :
 ```sh
 zpawn logs api -f         # un seul processus : sortie brute, sans préfixe
 zpawn restart worker      # nouveau PID, compteur de relances inchangé
-zpawn stop api            # état « stopped »
-zpawn up                  # relance api, « web unchanged » pour les autres
+zpawn kill api            # état « stopped »
+zpawn up -d               # relance api, « web unchanged » pour les autres
 curl -s localhost:8000 | head -3
 zpawn down
 ```
 
-Le port se change avec `PORT=9000 zpawn up`.
+Le port se change avec `PORT=9000 zpawn up -d`.
 
 ## 2. `colors/` : les couleurs ne doivent pas être tronquées
 
 ```sh
 cd examples/colors
-zpawn up
+zpawn up -d
 zpawn logs colors         # style, 16/256 couleurs, truecolor, unicode
 zpawn logs                # avec préfixes : le bloc violet doit rester violet
 zpawn down
@@ -57,10 +57,10 @@ Pour relire le fichier de log brut avec les couleurs : `less -R .pm/logs/colors.
 
 ```sh
 cd examples/crashy
-zpawn up
+zpawn up -d
 zpawn                     # flaky passe en « restarting », steady reste « running »
 zpawn logs flaky          # voir « exited with code 1 », « restarting in 2s », 4s, 8s…
-zpawn stop stubborn       # ignore SIGTERM : prend ~5 s, puis SIGKILL
+zpawn kill stubborn       # ignore SIGTERM : prend ~5 s, puis SIGKILL
 zpawn restart flaky       # sort de l'état « failed » (après 6 plantages rapides)
 zpawn down
 ```
@@ -76,19 +76,10 @@ Il rapporte, pour le démon : réveils par seconde et CPU au repos, RAM, temps d
 `zpawn ls`, puis le CPU par Mo de sortie traité quand un processus écrit en continu
 (sans suiveur, avec `logs -f flood`, avec `logs -f` global).
 
-## Test automatique
+## Tests automatiques
 
-```sh
-examples/smoke.sh              # ~20 s
-FULL=1 examples/smoke.sh       # ajoute le test SIGKILL (~7 s de plus)
-examples/smoke.sh /chemin/vers/zpawn
-```
-
-Le script copie les exemples dans un dossier temporaire, joue les trois scénarios,
-vérifie le résultat (processus lancés, couleurs intactes, restauration après le
-préfixe, isolation entre dossiers, relance automatique, arrêt propre) et nettoie
-tout. Code de sortie `0` si tout passe. Variable utile : `PORT` (par défaut 18765)
-si ce port est déjà pris.
+Ils sont dans [`../test/`](../test/README.md) : `test/run.sh` lance tout,
+`test/examples.sh` rejoue les trois scénarios ci-dessus.
 
 Un `.pm` créé dans `examples/` n'est jamais commité : il contient son propre
 `.gitignore`.

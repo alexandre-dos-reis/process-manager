@@ -4,7 +4,7 @@ Un gestionnaire de processus minimaliste en Zig, sur le modèle client/serveur d
 supervisor (un démon + une CLI qui lui parle par socket Unix), en plus simple.
 
 - **Un seul binaire** : `zpawn daemon` et le client sont le même exécutable.
-- **Le démon se lance tout seul** à la première commande `add` ou `up`.
+- **Le démon se lance tout seul** à `zpawn up`.
 - **Les couleurs ne sont jamais tronquées** : chaque processus tourne dans un PTY,
   donc il croit écrire dans un terminal et garde ses couleurs. Les octets sont
   stockés et renvoyés tels quels, sans filtrage ni réécriture.
@@ -12,8 +12,8 @@ supervisor (un démon + une CLI qui lui parle par socket Unix), en plus simple.
   sur tout le groupe de processus), logs en mémoire et sur disque.
 
 Le fonctionnement interne est décrit dans [ARCHITECTURE.md](ARCHITECTURE.md).
-Des scénarios à lancer (3 processus, couleurs, pannes) et un test automatique sont dans
-[examples/](examples/README.md).
+Des scénarios à lancer (3 processus, couleurs, pannes) sont dans
+[examples/](examples/README.md) ; les tests sont dans [test/](test/README.md).
 
 ## Compiler
 
@@ -28,21 +28,31 @@ mais **n'y a pas été testé**.
 
 ## Utilisation
 
+Tout se décrit dans un fichier `zpawn.yaml` ; il n'y a pas de commande pour ajouter un
+processus à la main.
+
 ```sh
-zpawn add web python3 -m http.server 8000   # définit et démarre
-zpawn add --cwd ~/app --no-restart job "make build | tee build.log"
-zpawn up                                    # lit ./zpawn.yaml (ou zpawn.yml, ou un chemin)
-zpawn                                       # ou `zpawn ls` : tableau d'état coloré
-zpawn logs web -f                           # sortie brute, couleurs intactes
-zpawn logs -f                               # tous les processus, préfixe « nom | » coloré
+zpawn init                  # crée un zpawn.yaml de départ
+zpawn up                    # lance tout, reste attaché : Ctrl-C arrête tout
+zpawn up -d                 # lance tout en arrière-plan et rend la main
+zpawn                       # (ou `zpawn ls`) tableau d'état coloré
+zpawn logs web              # sortie brute d'un service, couleurs intactes
+zpawn logs -f               # tous les services, préfixe « nom | » coloré, en direct
 zpawn logs web -n 500
-zpawn restart web | stop web | start web | rm web   (ou `all`)
-zpawn down                                  # arrête tout et quitte le démon
+zpawn restart web           # redémarre (ou démarre) un service ; sans nom : tous
+zpawn kill web              # arrête un service ; sans nom : tous
+zpawn down                  # arrête tout et quitte le démon
 ```
 
-Règle de quoting : un seul argument après le nom est exécuté tel quel par `sh -c`
-(les pipes, `&&`, variables fonctionnent) ; plusieurs arguments sont protégés
-individuellement.
+`zpawn <commande> -h` détaille les options. L'analyse des arguments est faite par
+[zig-clap](vendor/zig-clap/README.md).
+
+- `up` attaché : les sorties de tous les services défilent avec leur préfixe. Au
+  Ctrl-C (ou si un autre terminal lance `zpawn down`), tout est arrêté proprement.
+- `up -d` : le démon continue sans terminal ; `zpawn down` l'arrête.
+- `kill` arrête un service mais laisse le démon en vie (`restart` le relance).
+- `logs SERVICE` renvoie les octets tels quels, sans préfixe ; sans service, les
+  lignes sont préfixées pour distinguer les sources.
 
 `zpawn up` relance seulement ce qui a changé (« unchanged » sinon).
 
@@ -77,17 +87,28 @@ committer. Pour relire un log avec couleurs : `less -R .pm/logs/web.log`.
 - Il y a **un démon par projet** : deux dossiers différents = deux gestionnaires
   indépendants.
 - Comme git, `zpawn` remonte les dossiers parents pour trouver un `.pm` actif :
-  `zpawn ls` fonctionne depuis un sous-dossier du projet. `add` / `up` créent
+  `zpawn ls` fonctionne depuis un sous-dossier du projet. `up` crée
   `.pm` dans le dossier où tu les lances s'il n'y en a pas.
 - `$ZPAWN_HOME` force un autre emplacement.
 
 ## Limites connues
 
 - Les commandes sont exécutées par `/bin/sh -c`, avec l'environnement du client
-  qui a fait `add`/`up` (PATH inclus).
+  qui a fait `up` (PATH inclus).
 - Pas d'`attach` interactif (envoi de touches au processus) pour l'instant.
 - Après 6 plantages rapides d'affilée (< 3 s), un processus passe en `failed`
   jusqu'à un `restart` manuel.
 - Le préfixe `nom |` est ajouté à chaque ligne en mode « tous les processus » ;
   la couleur active est réappliquée après le préfixe. Les lignes de plusieurs
   processus qui se mélangent au milieu d'une ligne ne sont pas réordonnées.
+- Un processus retiré de `zpawn.yaml` reste connu du démon jusqu'à `zpawn down` (`up`
+  ajoute et met à jour, il ne supprime pas).
+- Le parseur YAML ne gère pas les blocs `|`/`>` et abandonne en silence les entrées qui
+  suivent une commande non quotée contenant `${...}` : mets la commande entre guillemets.
+
+## Tests
+
+```sh
+test/run.sh                  # build + tests unitaires + CLI + exemples
+zig build test               # tests unitaires seulement (test/config_test.zig)
+```

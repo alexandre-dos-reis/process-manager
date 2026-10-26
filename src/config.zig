@@ -12,7 +12,7 @@ const std = @import("std");
 const Yaml = @import("yaml").Yaml;
 const sys = @import("sys.zig");
 const common = @import("common.zig");
-const Buf = common.Buf;
+pub const Buf = common.Buf;
 const Allocator = std.mem.Allocator;
 
 pub const Item = struct {
@@ -68,10 +68,11 @@ fn parseBool(v: Yaml.Value) ?bool {
 
 /// Resolve `cwd` against `base_dir` and make sure it exists.
 fn resolveCwd(arena: Allocator, base_dir: []const u8, cwd: []const u8) ?[]const u8 {
+    const sep = if (std.mem.endsWith(u8, base_dir, "/")) "" else "/";
     const joined = if (cwd.len > 0 and cwd[0] == '/')
         std.fmt.allocPrintSentinel(arena, "{s}", .{cwd}, 0) catch return null
     else
-        std.fmt.allocPrintSentinel(arena, "{s}/{s}", .{ base_dir, cwd }, 0) catch return null;
+        std.fmt.allocPrintSentinel(arena, "{s}{s}{s}", .{ base_dir, sep, cwd }, 0) catch return null;
     var buf: [4096]u8 = undefined;
     const real = sys.realpath(joined.ptr, &buf) orelse return null;
     return arena.dupe(u8, std.mem.span(real)) catch null;
@@ -82,10 +83,13 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
     var yaml: Yaml = .{ .source = source };
     yaml.load(arena) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => {
+        error.ParseFailure => {
             describeSyntaxErrors(&yaml, path, msg);
             return error.Invalid;
         },
+        // The parser gave up without recording a position (e.g. a key with no value at the very end).
+        error.UnexpectedEof => return fail(msg, "{s}: unexpected end of file (a key without a value?)\n", .{path}),
+        else => return fail(msg, "{s}: invalid YAML ({s})\n", .{ path, @errorName(err) }),
     };
 
     if (yaml.docs.items.len == 0) return fail(msg, "{s}: the file is empty\n", .{path});

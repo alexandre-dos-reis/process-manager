@@ -4,6 +4,7 @@ const sys = @import("sys.zig");
 const common = @import("common.zig");
 const daemon = @import("daemon.zig");
 const config = @import("config.zig");
+const clap = @import("clap");
 const Buf = common.Buf;
 const gpa = common.gpa;
 
@@ -41,22 +42,22 @@ fn usage(color: bool) void {
     _ = writeAll(1,
         \\
         \\
-        \\Usage: zpawn <command> [args]
+        \\Usage: zpawn <command> [options]
         \\
-        \\  add [--cwd DIR] [--no-restart] NAME CMD...   define and start a process
-        \\  up [FILE]                                    start everything from zpawn.yaml
-        \\  ls                                           show processes (default command)
-        \\  logs [NAME] [-f] [-n N]                      show output, colors intact; no NAME = all
-        \\  start | stop | restart NAME|all
-        \\  rm NAME|all                                  stop and forget
-        \\  down                                         stop everything and quit the daemon
+        \\  init                    create a basic zpawn.yaml
+        \\  up [-d] [-f FILE]       start everything; stays attached (Ctrl-C stops it), -d detaches
+        \\  down                    stop everything started with `up -d`
+        \\  ls                      show processes (default command)
+        \\  logs [SERVICE] [-f] [-n N]   output, colors intact (no SERVICE: all, prefixed)
+        \\  restart [SERVICE]       restart (or start) one service, or all
+        \\  kill [SERVICE]          stop one service, or all (the daemon keeps running)
+        \\
+        \\Run `zpawn <command> -h` for the options of a command.
         \\
         \\
     );
     _ = writeAll(1, d);
     _ = writeAll(1,
-        \\One argument after NAME is run by a shell as-is ("a | b" works);
-        \\several arguments are quoted individually.
         \\State lives in ./.pm (nearest parent .pm wins; override with $ZPAWN_HOME).
     );
     _ = writeAll(1, r);
@@ -145,7 +146,7 @@ fn transact(home: [:0]const u8, req: *Req, mode: Mode) u8 {
             }
         },
         .need_daemon => {
-            eprint("no daemon running. Start something with `zpawn add` or `zpawn up`.", .{});
+            eprint("no daemon running. Start with `zpawn up`.", .{});
             return 1;
         },
         .optional => {
@@ -242,67 +243,6 @@ fn addItems(home: [:0]const u8, color: bool, replace: bool, items: []const confi
     return transact(home, &req, .autostart);
 }
 
-fn isSafeChar(ch: u8) bool {
-    return std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, "_-./:=@%+,", ch) != null;
-}
-
-fn shellQuote(out: *Buf, s: []const u8) void {
-    var plain = s.len > 0;
-    for (s) |ch| {
-        if (!isSafeChar(ch)) plain = false;
-    }
-    if (plain) return out.append(s);
-    out.appendByte('\'');
-    for (s) |ch| {
-        if (ch == '\'') out.append("'\\''") else out.appendByte(ch);
-    }
-    out.appendByte('\'');
-}
-
-fn cmdAdd(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
-    var cwd: []const u8 = currentDir();
-    var restart = true;
-    var i: usize = 0;
-    while (i < args.len and args[i].len > 1 and args[i][0] == '-') : (i += 1) {
-        const a = args[i];
-        if (std.mem.eql(u8, a, "--")) {
-            i += 1;
-            break;
-        } else if (std.mem.eql(u8, a, "--no-restart")) {
-            restart = false;
-        } else if (std.mem.eql(u8, a, "--cwd")) {
-            i += 1;
-            if (i >= args.len) {
-                eprint("--cwd needs a directory", .{});
-                return 2;
-            }
-            cwd = absPath(args[i]) orelse {
-                eprint("no such directory: {s}", .{args[i]});
-                return 1;
-            };
-        } else {
-            eprint("unknown option {s}", .{a});
-            return 2;
-        }
-    }
-    if (args.len < i + 2) {
-        eprint("usage: zpawn add [--cwd DIR] [--no-restart] NAME CMD...", .{});
-        return 2;
-    }
-    const name = args[i];
-    var cmd = Buf{};
-    defer cmd.deinit();
-    if (args.len == i + 2) {
-        cmd.append(args[i + 1]); // single argument: shell snippet, used as-is
-    } else {
-        for (args[i + 1 ..], 0..) |a, k| {
-            if (k > 0) cmd.appendByte(' ');
-            shellQuote(&cmd, a);
-        }
-    }
-    return addItems(home, color, false, &.{.{ .name = name, .cmd = cmd.slice(), .cwd = cwd, .restart = restart, .env = &.{} }});
-}
-
 fn readFile(path: []const u8, out: *Buf) bool {
     const z = common.dupeZ(path);
     defer gpa.free(z);
@@ -327,86 +267,250 @@ fn fileExists(path: []const u8) bool {
     return sys.access(z.ptr, 0) == 0;
 }
 
-fn cmdUp(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
-    const path: []const u8 = if (args.len > 0) args[0] else if (fileExists("zpawn.yaml"))
+/// Reads and parses the config; on failure prints why and returns null.
+fn loadConfig(arena: std.mem.Allocator, file: ?[]const u8) ?[]const config.Item {
+    const path: []const u8 = file orelse if (fileExists("zpawn.yaml"))
         "zpawn.yaml"
     else if (fileExists("zpawn.yml"))
         "zpawn.yml"
     else {
-        eprint("no zpawn.yaml in this directory (see examples/ for the format)", .{});
-        return 1;
+        eprint("no zpawn.yaml in this directory (create one with `zpawn init`)", .{});
+        return null;
     };
 
     var text = Buf{};
     defer text.deinit();
     if (!readFile(path, &text)) {
         eprint("cannot read {s}", .{path});
-        return 1;
+        return null;
     }
     const abs = absPath(path) orelse path;
     const slash = std.mem.lastIndexOfScalar(u8, abs, '/') orelse 0;
-    const dir = if (slash == 0) "/" else abs[0..slash];
+    const dir = arena.dupe(u8, if (slash == 0) "/" else abs[0..slash]) catch return null;
 
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
     var msg = Buf{};
     defer msg.deinit();
-    const items = config.parse(arena_state.allocator(), text.slice(), path, dir, &msg) catch |err| switch (err) {
+    return config.parse(arena, text.slice(), path, dir, &msg) catch |err| switch (err) {
         error.Invalid => {
             _ = writeAll(2, msg.slice());
-            return 1;
+            return null;
         },
         error.OutOfMemory => {
             eprint("out of memory", .{});
-            return 1;
+            return null;
         },
     };
-    return addItems(home, color, true, items);
 }
 
-// -------------------------------------------------------------- the rest
+// ------------------------------------------------------------ up (attached)
 
-fn cmdLogs(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
-    var target: []const u8 = "";
-    var n: []const u8 = "100";
-    var follow = false;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (std.mem.eql(u8, a, "-f") or std.mem.eql(u8, a, "--follow")) {
-            follow = true;
-        } else if (std.mem.eql(u8, a, "-n") or std.mem.eql(u8, a, "--lines")) {
-            i += 1;
-            if (i >= args.len) {
-                eprint("-n needs a number", .{});
-                return 2;
-            }
-            n = args[i];
-        } else if (a.len > 0 and a[0] == '-') {
-            eprint("unknown option {s}", .{a});
-            return 2;
-        } else target = a;
+var stop_pipe: [2]c_int = .{ -1, -1 };
+
+fn onStop(_: c_int) callconv(.c) void {
+    const ep = sys.errnoPtr();
+    const saved = ep.*;
+    _ = sys.write(stop_pipe[1], "x", 1);
+    ep.* = saved;
+}
+
+/// Streams every service's output until Ctrl-C (or until the daemon goes away),
+/// then shuts the daemon down.
+fn attach(home: [:0]const u8, color: bool) u8 {
+    if (sys.pipe(&stop_pipe) != 0) return 1;
+    for (stop_pipe) |fd| {
+        sys.setNonblock(fd);
+        sys.setCloexec(fd);
     }
-    if (std.fmt.parseInt(usize, n, 10) catch null == null) {
-        eprint("-n expects a number, got '{s}'", .{n});
-        return 2;
+    _ = sys.signal(sys.SIGINT, @intFromPtr(&onStop));
+    _ = sys.signal(sys.SIGTERM, @intFromPtr(&onStop));
+
+    const fd = common.connectIn(home);
+    if (fd < 0) {
+        eprint("cannot reach the daemon", .{});
+        return 1;
     }
     var req = newReq("logs", color);
     defer req.b.deinit();
-    req.str(target);
-    req.str(n);
-    req.str(if (follow) "1" else "0");
+    req.str("");
+    req.str("0");
+    req.str("1");
+    if (!req.send(fd)) return 1;
+
+    var buf: [65536]u8 = undefined;
+    var first = true;
+    var interrupted = false;
+    while (true) {
+        var fds = [2]sys.PollFd{
+            .{ .fd = fd, .events = sys.POLLIN, .revents = 0 },
+            .{ .fd = stop_pipe[0], .events = sys.POLLIN, .revents = 0 },
+        };
+        if (sys.poll(&fds, 2, -1) < 0) {
+            if (sys.errno() == sys.EINTR) continue;
+            break;
+        }
+        if (fds[1].revents != 0) {
+            interrupted = true;
+            break;
+        }
+        if (fds[0].revents != 0) {
+            const n = sys.read(fd, &buf, buf.len);
+            if (n < 0 and sys.errno() == sys.EINTR) continue;
+            if (n <= 0) break; // the daemon is gone
+            var chunk = buf[0..@intCast(n)];
+            if (first) {
+                chunk = chunk[1..]; // status byte
+                first = false;
+            }
+            if (chunk.len > 0 and !writeAll(1, chunk)) break;
+        }
+    }
+    _ = sys.close(fd);
+    if (!interrupted) return 0;
+
+    _ = writeAll(1, "\nstopping...\n");
+    _ = sys.signal(sys.SIGINT, sys.SIG_IGN); // a second Ctrl-C must not abort the shutdown
+    var down = newReq("down", color);
+    defer down.b.deinit();
+    return transact(home, &down, .optional);
+}
+
+// --------------------------------------------------------------- commands
+
+const Parsed = struct {
+    fn Of(comptime params: []const clap.Param(clap.Help)) type {
+        return clap.ResultEx(clap.Help, params, clap.parsers.default);
+    }
+};
+
+/// Writes clap output (help or diagnostics) through a growable buffer to `fd`.
+fn emitHelp(comptime params: []const clap.Param(clap.Help), head: []const u8) void {
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    aw.writer.print("{s}\n\n", .{head}) catch return;
+    clap.help(&aw.writer, clap.Help, params, .{ .spacing_between_parameters = 0 }) catch return;
+    _ = writeAll(1, aw.written());
+}
+
+fn parseSub(
+    comptime params: []const clap.Param(clap.Help),
+    it: *clap.args.SliceIterator,
+    comptime head: []const u8,
+    code: *u8,
+) ?Parsed.Of(params) {
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, params, clap.parsers.default, it, .{
+        .diagnostic = &diag,
+        .allocator = gpa,
+    }) catch |err| {
+        var aw: std.Io.Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        aw.writer.writeAll("zpawn: ") catch {};
+        diag.report(&aw.writer, err) catch {};
+        _ = writeAll(2, aw.written());
+        _ = writeAll(2, "try `zpawn " ++ comptime std.mem.sliceTo(head, ' ') ++ " -h`\n");
+        code.* = 2;
+        return null;
+    };
+    if (@hasField(@TypeOf(res.args), "help") and res.args.help != 0) {
+        emitHelp(params, "Usage: zpawn " ++ head);
+        res.deinit();
+        code.* = 0;
+        return null;
+    }
+    return res;
+}
+
+const init_template =
+    \\# zpawn.yaml
+    \\#   zpawn up        run everything attached (Ctrl-C stops it all)
+    \\#   zpawn up -d     run in the background; stop with `zpawn down`
+    \\#
+    \\# Put a command in quotes when it contains { } " # or ': '.
+    \\processes:
+    \\  web: "python3 -m http.server ${PORT:-8000}"
+    \\  worker:
+    \\    cmd: "while true; do echo working; sleep 2; done"
+    \\    # cwd: ./jobs          # relative to this file
+    \\    # restart: false       # default: restart after a crash
+    \\    # env:
+    \\    #   LOG_LEVEL: debug
+    \\
+;
+
+fn cmdInit(it: *clap.args.SliceIterator) u8 {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help   Show this help.
+        \\--force      Overwrite an existing zpawn.yaml.
+        \\
+    );
+    var code: u8 = 0;
+    var res = parseSub(&params, it, "init [--force]", &code) orelse return code;
+    defer res.deinit();
+    if (res.args.force == 0 and (fileExists("zpawn.yaml") or fileExists("zpawn.yml"))) {
+        eprint("zpawn.yaml already exists (use --force to overwrite)", .{});
+        return 1;
+    }
+    const fd = sys.open("zpawn.yaml", sys.O_WRONLY | sys.O_CREAT | sys.O_TRUNC, @as(c_uint, 0o644));
+    if (fd < 0) {
+        eprint("cannot write zpawn.yaml", .{});
+        return 1;
+    }
+    defer _ = sys.close(fd);
+    if (!writeAll(fd, init_template)) return 1;
+    _ = writeAll(1, "created zpawn.yaml - edit it, then run `zpawn up`\n");
+    return 0;
+}
+
+fn cmdUp(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator) u8 {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help         Show this help.
+        \\-d, --detach       Run in the background and return.
+        \\-f, --file <str>   Config file (default: zpawn.yaml).
+        \\
+    );
+    var code: u8 = 0;
+    var res = parseSub(&params, it, "up [-d] [-f FILE]", &code) orelse return code;
+    defer res.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const items = loadConfig(arena_state.allocator(), res.args.file) orelse return 1;
+    const rc = addItems(home, color, true, items);
+    if (rc != 0 or res.args.detach != 0) return rc;
+    return attach(home, color);
+}
+
+fn cmdLogs(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator) u8 {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help       Show this help.
+        \\-f, --follow     Keep streaming new output.
+        \\-n, --lines <usize>   Lines of history to show (default 100).
+        \\<str>
+        \\
+    );
+    var code: u8 = 0;
+    var res = parseSub(&params, it, "logs [SERVICE] [-f] [-n N]", &code) orelse return code;
+    defer res.deinit();
+    var req = newReq("logs", color);
+    defer req.b.deinit();
+    req.str(res.positionals[0] orelse "");
+    req.num(res.args.lines orelse 100);
+    req.str(if (res.args.follow != 0) "1" else "0");
     return transact(home, &req, .need_daemon);
 }
 
-fn cmdTarget(home: [:0]const u8, color: bool, verb: []const u8, args: []const []const u8) u8 {
-    if (args.len != 1) {
-        eprint("usage: zpawn {s} NAME|all", .{verb});
-        return 2;
-    }
+fn cmdTarget(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator, comptime name: []const u8, verb: []const u8) u8 {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help   Show this help.
+        \\<str>
+        \\
+    );
+    var code: u8 = 0;
+    var res = parseSub(&params, it, name ++ " [SERVICE]", &code) orelse return code;
+    defer res.deinit();
     var req = newReq(verb, color);
     defer req.b.deinit();
-    req.str(args[0]);
+    req.str(res.positionals[0] orelse "all");
     return transact(home, &req, .need_daemon);
 }
 
@@ -416,9 +520,19 @@ fn cmdSimple(home: [:0]const u8, color: bool, verb: []const u8, mode: Mode) u8 {
     return transact(home, &req, mode);
 }
 
-fn eq(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
+/// Commands without options: only `-h`.
+fn cmdPlain(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator, comptime name: []const u8, verb: []const u8) u8 {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help   Show this help.
+        \\
+    );
+    var code: u8 = 0;
+    var res = parseSub(&params, it, name, &code) orelse return code;
+    res.deinit();
+    return cmdSimple(home, color, verb, .optional);
 }
+
+const Command = enum { init, up, down, ls, logs, restart, kill, help };
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     var args: std.ArrayList([]const u8) = .empty;
@@ -430,28 +544,62 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     const color = sys.isatty(1) != 0 and sys.getenv("NO_COLOR") == null;
     const home = common.homeDir();
 
-    if (argv.len == 0) return cmdSimple(home, color, "ls", .optional);
-    const verb = argv[0];
-    const rest = argv[1..];
+    // Internal: the client re-executes itself as the daemon.
+    if (argv.len >= 1 and std.mem.eql(u8, argv[0], "daemon"))
+        return daemon.run(if (argv.len > 1) common.dupeZ(argv[1]) else home);
 
-    if (eq(verb, "daemon")) return daemon.run(if (rest.len > 0) common.dupeZ(rest[0]) else home);
-    if (eq(verb, "-h") or eq(verb, "--help") or eq(verb, "help")) {
+    if (argv.len == 0) return cmdSimple(home, color, "ls", .optional);
+
+    const top = comptime clap.parseParamsComptime(
+        \\-h, --help     Show help.
+        \\-V, --version  Show version.
+        \\<command>
+        \\
+    );
+    var it = clap.args.SliceIterator{ .args = argv };
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &top, .{ .command = clap.parsers.enumeration(Command) }, &it, .{
+        .diagnostic = &diag,
+        .allocator = gpa,
+        .terminating_positional = 0, // the rest belongs to the subcommand
+    }) catch |err| {
+        var aw: std.Io.Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        if (err == error.NameNotPartOfEnum) {
+            aw.writer.print("zpawn: unknown command '{s}'\n", .{argv[0]}) catch {};
+        } else {
+            aw.writer.writeAll("zpawn: ") catch {};
+            diag.report(&aw.writer, err) catch {};
+        }
+        _ = writeAll(2, aw.written());
+        _ = writeAll(2, "try `zpawn -h`\n");
+        return 2;
+    };
+    defer res.deinit();
+
+    if (res.args.help != 0) {
         usage(color);
         return 0;
     }
-    if (eq(verb, "-v") or eq(verb, "--version") or eq(verb, "version")) {
+    if (res.args.version != 0) {
         _ = writeAll(1, "zpawn " ++ VERSION ++ "\n");
         return 0;
     }
-    if (eq(verb, "ls") or eq(verb, "status") or eq(verb, "ps")) return cmdSimple(home, color, "ls", .optional);
-    if (eq(verb, "add")) return cmdAdd(home, color, rest);
-    if (eq(verb, "up")) return cmdUp(home, color, rest);
-    if (eq(verb, "logs") or eq(verb, "log")) return cmdLogs(home, color, rest);
-    if (eq(verb, "start") or eq(verb, "stop") or eq(verb, "restart")) return cmdTarget(home, color, verb, rest);
-    if (eq(verb, "rm") or eq(verb, "remove")) return cmdTarget(home, color, "rm", rest);
-    if (eq(verb, "down")) return cmdSimple(home, color, "down", .optional);
-
-    eprint("unknown command '{s}'", .{verb});
-    usage(false);
-    return 2;
+    const command = res.positionals[0] orelse {
+        usage(color);
+        return 2;
+    };
+    return switch (command) {
+        .help => blk: {
+            usage(color);
+            break :blk 0;
+        },
+        .init => cmdInit(&it),
+        .up => cmdUp(home, color, &it),
+        .down => cmdPlain(home, color, &it, "down", "down"),
+        .ls => cmdPlain(home, color, &it, "ls", "ls"),
+        .logs => cmdLogs(home, color, &it),
+        .restart => cmdTarget(home, color, &it, "restart", "restart"),
+        .kill => cmdTarget(home, color, &it, "kill", "stop"),
+    };
 }

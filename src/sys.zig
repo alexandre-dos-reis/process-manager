@@ -19,6 +19,7 @@ pub const O_RDONLY: c_int = 0;
 pub const O_WRONLY: c_int = 1;
 pub const O_CREAT: c_int = if (is_linux) 0o100 else 0x200;
 pub const O_APPEND: c_int = if (is_linux) 0o2000 else 0x8;
+pub const O_TRUNC: c_int = if (is_linux) 0o1000 else 0x400;
 pub const O_EXCL: c_int = if (is_linux) 0o200 else 0x800;
 pub const O_NONBLOCK: c_int = if (is_linux) 0o4000 else 0x4;
 

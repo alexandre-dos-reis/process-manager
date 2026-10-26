@@ -32,7 +32,7 @@ hwm() { awk '/VmHWM/ {print $2}' "/proc/$1/status"; }
 
 # NOLOG=1 : on remplace .pm/logs par un fichier, donc le démon ne peut pas écrire de log disque.
 if [ "${NOLOG:-0}" = 1 ]; then mkdir .pm && : >.pm/logs; fi
-"$Z" up >/dev/null
+"$Z" up -d >/dev/null
 sleep 3
 P=$(dpid)
 [ -n "$P" ] || { echo "démon introuvable" >&2; exit 2; }
@@ -57,9 +57,14 @@ s1=$(date +%s%N)
 awk -v a="$s0" -v b="$s1" -v n="$n" 'BEGIN { printf "client : %.2f ms par `zpawn ls`\n", (b - a) / n / 1e6 }'
 
 # --- flot de sortie
-"$Z" add flood "yes \"\$(printf '\\033[32mhello world, this is colored output\\033[0m')\"" >/dev/null
+# le processus « flood » est ajouté au YAML de la copie, puis `up -d` le démarre
+cat >flood.sh <<'SH'
+exec yes "$(printf '\033[32mhello world, this is colored output\033[0m')"
+SH
+printf '  flood: sh ./flood.sh\n' >>zpawn.yaml
+"$Z" up -d >/dev/null
 sleep 1
-"$Z" stop flood >/dev/null; sleep 1
+"$Z" kill flood >/dev/null; sleep 1
 
 # Octets écrits par tout le groupe de processus d'un processus (via /proc/PID/io).
 group_wchar() {
@@ -74,7 +79,7 @@ run_flood() { # $1 = libellé ; le suiveur éventuel est lancé par l'appelant
   w0=$(group_wchar "$g"); t0=$(ticks "$P")
   sleep "$FLOOD_SECS"
   w1=$(group_wchar "$g"); t1=$(ticks "$P")
-  "$Z" stop flood >/dev/null
+  "$Z" kill flood >/dev/null
   awk -v l="$1" -v t="$((t1 - t0))" -v tick="$TICK" -v s="$FLOOD_SECS" -v b="$((w1 - w0))" 'BEGIN {
     mb = b / 1048576
     printf "flot %-24s : %6.1f Mo/s, CPU démon %5.0f ms/s, %6.0f ms par Mo\n", l, mb / s, t / tick * 1000 / s, (mb > 0 ? t / tick * 1000 / mb : 0) }'

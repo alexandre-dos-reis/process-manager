@@ -21,6 +21,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // zig-clap, vendored (MIT): command-line parsing, see vendor/zig-clap/README.md
+    const clap = b.createModule(.{
+        .root_source_file = b.path("vendor/zig-clap/clap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "zpawn",
         .root_module = b.createModule(.{
@@ -29,8 +36,31 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
             .strip = optimize != .debug,
-            .imports = &.{.{ .name = "yaml", .module = yaml }},
+            .imports = &.{
+                .{ .name = "yaml", .module = yaml },
+                .{ .name = "clap", .module = clap },
+            },
         }),
     });
     b.installArtifact(exe);
+
+    // `zig build test`: unit tests live in test/, never inline in src/.
+    const config_mod = b.createModule(.{
+        .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = .debug,
+        .link_libc = true,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
+    });
+    const unit = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/config_test.zig"),
+            .target = target,
+            .optimize = .debug,
+            .link_libc = true,
+            .imports = &.{.{ .name = "config", .module = config_mod }},
+        }),
+    });
+    const test_step = b.step("test", "Run the unit tests (test/*_test.zig)");
+    test_step.dependOn(&b.addRunArtifact(unit).step);
 }
