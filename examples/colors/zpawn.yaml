@@ -1,0 +1,6 @@
+# Un processus qui affiche toutes sortes de séquences ANSI, et un processus sans couleur
+# pour comparer. Lance `zpawn logs` : rien ne doit être tronqué ni déformé.
+processes:
+  colors: sh ./colors.sh
+  plain: 'while true; do echo "pas de couleur ici"; sleep 2; done'
+  purple: sh ./purple.sh

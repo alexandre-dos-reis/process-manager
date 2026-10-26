@@ -88,7 +88,7 @@ pub fn dupeZ(s: []const u8) [:0]u8 {
     return joinZ(&.{s});
 }
 
-/// State directory: $ZVISOR_HOME if set, else the nearest `.pm` directory that
+/// State directory: $ZPAWN_HOME if set, else the nearest `.pm` directory that
 /// has a live socket in the current directory or one of its parents (like git),
 /// else `./.pm`. Nothing is ever written to the user's home directory.
 pub fn homeDir() [:0]u8 {
@@ -96,7 +96,7 @@ pub fn homeDir() [:0]u8 {
     const cwd_p = sys.getcwd(&buf, buf.len) orelse return dupeZ(".pm");
     const cwd = std.mem.span(cwd_p);
 
-    if (sys.getenv("ZVISOR_HOME")) |p| {
+    if (sys.getenv("ZPAWN_HOME")) |p| {
         const v = std.mem.span(p);
         if (v.len > 0 and v[0] == '/') return dupeZ(v);
         return joinZ(&.{ cwd, "/", v });

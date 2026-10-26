@@ -1,0 +1,9 @@
+# Pour voir la gestion des pannes.
+# steady   : tourne normalement.
+# flaky    : plante au bout d'1 s, est relancé avec un délai croissant (1 s, 2 s, 4 s…),
+#            puis passe en "failed" après 6 plantages rapides.
+# stubborn : ignore SIGTERM ; `zpawn stop stubborn` met ~5 s (puis SIGKILL).
+processes:
+  steady: 'while true; do echo "tout va bien"; sleep 2; done'
+  flaky: sh ./flaky.sh
+  stubborn: "trap '' TERM; while true; do sleep 1; done"

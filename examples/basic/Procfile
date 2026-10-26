@@ -1,6 +1,0 @@
-# Trois processus : un site statique, une fausse API et un worker.
-# Les scripts sont relatifs au dossier de ce Procfile.
-# Change le port avec : PORT=9000 zvisor up
-web:    python3 -m http.server ${PORT:-8000}
-api:    sh ./api.sh
-worker: sh ./worker.sh

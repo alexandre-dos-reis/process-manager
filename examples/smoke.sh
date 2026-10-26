@@ -1,13 +1,13 @@
 #!/bin/sh
 # Test de fumée de bout en bout, sur une copie des exemples dans un dossier temporaire.
 #
-#   examples/smoke.sh [chemin/vers/zvisor]     (défaut : ../zig-out/bin/zvisor)
+#   examples/smoke.sh [chemin/vers/zpawn]     (défaut : ../zig-out/bin/zpawn)
 #   FULL=1 examples/smoke.sh                   ajoute le test SIGKILL (~7 s de plus)
 #
 # Prérequis : python3 (pour le serveur HTTP de basic/).
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-Z=${1:-$HERE/../zig-out/bin/zvisor}
+Z=${1:-$HERE/../zig-out/bin/zpawn}
 if [ ! -x "$Z" ]; then
   echo "binaire introuvable : $Z (lance d'abord : zig build)" >&2
   exit 2
@@ -58,6 +58,14 @@ check "le serveur HTTP répond" 'curl -fs "http://127.0.0.1:$PORT/" -o /dev/null
 check "dossier .pm créé avec logs et .gitignore" '[ -f .pm/.gitignore ] && [ -f .pm/logs/api.log ]'
 check "couleurs intactes (ESC[32m...ESC[0m)" '"$Z" logs api -n 50 | grep -q "${ESC}\[32m200${ESC}\[0m"'
 check "préfixe « api | » en vue globale" '"$Z" logs -n 10 | grep -q "api  *|"'
+check "env du YAML transmis au worker" '"$Z" logs worker -n 50 | grep -q "worker billing"'
+check "up sans fichier : message clair" '(cd "$TMP" && "$Z" up 2>&1 | grep -q "no zpawn.yaml")'
+printf 'processes:\n  x:\n    nope: 1\n' > "$TMP/bad.yaml"
+check "YAML invalide : erreur lisible" '"$Z" up "$TMP/bad.yaml" 2>&1 | grep -q "unknown key"'
+check "env du YAML transmis au worker" '"$Z" logs worker -n 50 | grep -q "worker billing"'
+check "up sans fichier : message clair" '(cd "$TMP" && "$Z" up 2>&1 | grep -q "no zpawn.yaml")'
+printf 'processes:\n  x:\n    nope: 1\n' > "$TMP/bad.yaml"
+check "YAML invalide : erreur lisible" '"$Z" up "$TMP/bad.yaml" 2>&1 | grep -q "unknown key"'
 check "fonctionne depuis un sous-dossier" '(cd sub && "$Z" ls | grep -q web)'
 check "un autre dossier est isolé" '(cd "$TMP" && "$Z" ls | grep -q "daemon not running")'
 before=$(pid_of worker)

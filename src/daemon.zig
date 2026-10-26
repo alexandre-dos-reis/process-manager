@@ -1,4 +1,4 @@
-//! zvisor daemon: owns the processes (each on its own PTY), keeps a ring buffer
+//! zpawn daemon: owns the processes (each on its own PTY), keeps a ring buffer
 //! of raw output per process and serves clients over a Unix socket.
 //!
 //! Output is never rewritten: bytes coming from the PTY are stored and forwarded
@@ -179,7 +179,8 @@ const Proc = struct {
     name: []u8,
     cmd: [:0]u8,
     cwd: [:0]u8,
-    env: std.ArrayList([:0]u8) = .empty,
+    env: std.ArrayList([:0]u8) = .empty, // the client's environment
+    over: std.ArrayList([:0]u8) = .empty, // per-process overrides ("KEY=value")
     cols: u16,
     rows: u16,
     autorestart: bool,
@@ -362,7 +363,7 @@ fn rebuildFmt(p: *Proc) void {
     p.fmt.scan(r.data[0 .. r.len - first]);
 }
 
-/// Record and broadcast bytes produced by a process (or a zvisor note).
+/// Record and broadcast bytes produced by a process (or a zpawn note).
 fn emit(p: *Proc, bytes: []const u8) void {
     if (bytes.len == 0) return;
     const want_fmt = hasPrefixFollower(p);
@@ -393,7 +394,7 @@ fn note(p: *Proc, comptime f: []const u8, args: anytype) void {
     var m = Buf{};
     defer m.deinit();
     if (p.last_byte != '\n' and p.last_byte != '\r') m.append("\r\n");
-    m.print(RESET ++ DIM ++ "[zvisor] " ++ f ++ RESET ++ "\r\n", args);
+    m.print(RESET ++ DIM ++ "[zpawn] " ++ f ++ RESET ++ "\r\n", args);
     emit(p, m.slice());
 }
 
@@ -459,6 +460,18 @@ fn readPty(p: *Proc) bool {
     return len == buf.len;
 }
 
+fn envKey(e: []const u8) []const u8 {
+    return e[0 .. std.mem.indexOfScalar(u8, e, '=') orelse e.len];
+}
+
+fn isOverridden(p: *Proc, e: []const u8) bool {
+    const k = envKey(e);
+    for (p.over.items) |o| {
+        if (std.mem.eql(u8, envKey(o), k)) return true;
+    }
+    return false;
+}
+
 fn startProc(p: *Proc) void {
     openLog(p);
 
@@ -467,10 +480,15 @@ fn startProc(p: *Proc) void {
     defer envp.deinit(gpa);
     var has_term = false;
     for (p.env.items) |e| {
+        if (isOverridden(p, e)) continue;
         if (std.mem.startsWith(u8, e, "TERM=")) {
             if (std.mem.eql(u8, e, "TERM=dumb")) continue;
             has_term = true;
         }
+        envp.append(gpa, e.ptr) catch @panic("oom");
+    }
+    for (p.over.items) |e| {
+        if (std.mem.startsWith(u8, e, "TERM=")) has_term = true;
         envp.append(gpa, e.ptr) catch @panic("oom");
     }
     if (!has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
@@ -490,7 +508,7 @@ fn startProc(p: *Proc) void {
         _ = sys.signal(sys.SIGTERM, sys.SIG_DFL);
         _ = sys.signal(sys.SIGINT, sys.SIG_DFL);
         if (p.cwd.len > 0 and sys.chdir(p.cwd.ptr) != 0) {
-            const msg = "zvisor: cannot enter working directory\n";
+            const msg = "zpawn: cannot enter working directory\n";
             _ = sys.write(2, msg, msg.len);
             sys._exit(127);
         }
@@ -572,7 +590,7 @@ fn onExit(p: *Proc, status: c_int, now: i64) void {
     if (ran < QUICK_EXIT_MS) p.fails += 1 else p.fails = 0;
     if (p.fails >= MAX_QUICK_FAILS) {
         p.state = .failed;
-        note(p, "crashing too fast, giving up (try `zvisor restart {s}`)", .{p.name});
+        note(p, "crashing too fast, giving up (try `zpawn restart {s}`)", .{p.name});
         return;
     }
     const shift: u5 = @intCast(@min(p.fails, 5));
@@ -646,7 +664,7 @@ fn report(out: *Buf, st: Style, p: *Proc, comptime f: []const u8, args: anytype)
 fn collect(out: *Buf, ok: *bool, st: Style, target: []const u8, list: *std.ArrayList(*Proc)) bool {
     if (std.mem.eql(u8, target, "all")) {
         if (procs.items.len == 0) {
-            fail(out, ok, st, "no processes defined yet (try `zvisor add NAME CMD`)", .{});
+            fail(out, ok, st, "no processes defined yet (try `zpawn add NAME CMD`)", .{});
             return false;
         }
         for (procs.items) |p| list.append(gpa, p) catch @panic("oom");
@@ -671,13 +689,21 @@ fn freeStr(s: [:0]u8) void {
     gpa.free(s);
 }
 
-fn setEnv(p: *Proc, strs: []const []const u8) void {
-    for (p.env.items) |e| freeStr(e);
-    p.env.clearRetainingCapacity();
-    for (strs) |s| p.env.append(gpa, common.dupeZ(s)) catch @panic("oom");
+fn setList(list: *std.ArrayList([:0]u8), strs: []const []const u8) void {
+    for (list.items) |e| freeStr(e);
+    list.clearRetainingCapacity();
+    for (strs) |s| list.append(gpa, common.dupeZ(s)) catch @panic("oom");
 }
 
-fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8) *Proc {
+fn sameList(list: *const std.ArrayList([:0]u8), strs: []const []const u8) bool {
+    if (list.items.len != strs.len) return false;
+    for (list.items, strs) |a, b| {
+        if (!std.mem.eql(u8, a, b)) return false;
+    }
+    return true;
+}
+
+fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8, over: []const []const u8) *Proc {
     const p = gpa.create(Proc) catch @panic("oom");
     p.* = .{
         .name = gpa.dupe(u8, name) catch @panic("oom"),
@@ -689,7 +715,8 @@ fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: 
         .color = palette[color_counter % palette.len],
     };
     color_counter += 1;
-    setEnv(p, env);
+    setList(&p.env, env);
+    setList(&p.over, over);
     return p;
 }
 
@@ -698,6 +725,8 @@ fn freeProc(p: *Proc) void {
     if (p.log_fd >= 0) _ = sys.close(p.log_fd);
     for (p.env.items) |e| freeStr(e);
     p.env.deinit(gpa);
+    for (p.over.items) |e| freeStr(e);
+    p.over.deinit(gpa);
     gpa.free(p.name);
     freeStr(p.cmd);
     freeStr(p.cwd);
@@ -706,22 +735,37 @@ fn freeProc(p: *Proc) void {
     gpa.destroy(p);
 }
 
-/// add: [verb, color, cwd, cols, rows, restart, replace, n, (name, cmd)*n, env...]
+/// add: [verb, color, cols, rows, replace, n,
+///       (name, cmd, cwd, restart, nenv, "K=V" * nenv) * n, client environment...]
 fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
-    if (a.len < 8) return fail(out, ok, st, "malformed request", .{});
-    const cwd = a[2];
-    const cols = parseU16(a[3], 160);
-    const rows = parseU16(a[4], 48);
-    const autorestart = a[5].len > 0 and a[5][0] == '1';
-    const replace = a[6].len > 0 and a[6][0] == '1';
-    const n = std.fmt.parseInt(usize, a[7], 10) catch 0;
-    if (a.len < 8 + 2 * n) return fail(out, ok, st, "malformed request", .{});
-    const env = a[8 + 2 * n ..];
+    if (a.len < 6) return fail(out, ok, st, "malformed request", .{});
+    const cols = parseU16(a[2], 160);
+    const rows = parseU16(a[3], 48);
+    const replace = a[4].len > 0 and a[4][0] == '1';
+    const n = std.fmt.parseInt(usize, a[5], 10) catch 0;
 
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const name = a[8 + 2 * i];
-        const cmd = a[9 + 2 * i];
+    // The client's environment follows the items: walk them once to find where.
+    var end: usize = 6;
+    var k: usize = 0;
+    while (k < n) : (k += 1) {
+        if (a.len < end + 5) return fail(out, ok, st, "malformed request", .{});
+        const nenv = std.fmt.parseInt(usize, a[end + 4], 10) catch return fail(out, ok, st, "malformed request", .{});
+        end += 5 + nenv;
+    }
+    if (a.len < end) return fail(out, ok, st, "malformed request", .{});
+    const env = a[end..];
+
+    var i: usize = 6;
+    k = 0;
+    while (k < n) : (k += 1) {
+        const name = a[i];
+        const cmd = a[i + 1];
+        const cwd = a[i + 2];
+        const autorestart = a[i + 3].len > 0 and a[i + 3][0] == '1';
+        const nenv = std.fmt.parseInt(usize, a[i + 4], 10) catch 0;
+        const over = a[i + 5 ..][0..nenv];
+        i += 5 + nenv;
+
         if (!validName(name)) {
             fail(out, ok, st, "invalid name '{s}' (use letters, digits, - _ . ; max 32)", .{name});
             continue;
@@ -732,11 +776,11 @@ fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
         }
         if (findProc(name)) |p| {
             if (!replace) {
-                fail(out, ok, st, "'{s}' already exists (use `zvisor restart {s}`, or `zvisor rm {s}` first)", .{ name, name, name });
+                fail(out, ok, st, "'{s}' already exists (use `zpawn restart {s}`, or `zpawn rm {s}` first)", .{ name, name, name });
                 continue;
             }
-            const same = std.mem.eql(u8, p.cmd, cmd) and std.mem.eql(u8, p.cwd, cwd);
-            setEnv(p, env);
+            const same = std.mem.eql(u8, p.cmd, cmd) and std.mem.eql(u8, p.cwd, cwd) and sameList(&p.over, over);
+            setList(&p.env, env);
             p.cols = cols;
             p.rows = rows;
             p.autorestart = autorestart;
@@ -748,6 +792,7 @@ fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
             freeStr(p.cwd);
             p.cmd = common.dupeZ(cmd);
             p.cwd = common.dupeZ(cwd);
+            setList(&p.over, over);
             if (p.pid > 0) {
                 stopProc(p);
                 p.restart_pending = true;
@@ -758,7 +803,7 @@ fn cmdAdd(out: *Buf, ok: *bool, st: Style, a: []const []const u8) void {
                 report(out, st, p, "started (pid {d})", .{p.pid});
             }
         } else {
-            const p = newProc(name, cmd, cwd, cols, rows, autorestart, env);
+            const p = newProc(name, cmd, cwd, cols, rows, autorestart, env, over);
             procs.append(gpa, p) catch @panic("oom");
             recomputeMaxName();
             startProc(p);
@@ -816,7 +861,7 @@ fn padTo(out: *Buf, have: usize, want: usize) void {
 
 fn cmdLs(out: *Buf, st: Style) void {
     if (procs.items.len == 0) {
-        out.print("{s}no processes. Try:{s} zvisor add web \"python3 -m http.server\"\n", .{ st.c(DIM), st.c(RESET) });
+        out.print("{s}no processes. Try:{s} zpawn add web \"python3 -m http.server\"\n", .{ st.c(DIM), st.c(RESET) });
         return;
     }
     const now = sys.nowMs();

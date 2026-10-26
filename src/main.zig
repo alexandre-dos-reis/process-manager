@@ -1,8 +1,9 @@
-//! zvisor: a small, friendly process manager (client + daemon in one binary).
+//! zpawn: a small, friendly process manager (client + daemon in one binary).
 const std = @import("std");
 const sys = @import("sys.zig");
 const common = @import("common.zig");
 const daemon = @import("daemon.zig");
+const config = @import("config.zig");
 const Buf = common.Buf;
 const gpa = common.gpa;
 
@@ -25,7 +26,7 @@ fn writeAll(fd: c_int, bytes: []const u8) bool {
 }
 
 fn eprint(comptime f: []const u8, args: anytype) void {
-    const s = std.fmt.allocPrint(gpa, "zvisor: " ++ f ++ "\n", args) catch return;
+    const s = std.fmt.allocPrint(gpa, "zpawn: " ++ f ++ "\n", args) catch return;
     defer gpa.free(s);
     _ = writeAll(2, s);
 }
@@ -35,15 +36,15 @@ fn usage(color: bool) void {
     const d = if (color) "\x1b[2m" else "";
     const r = if (color) "\x1b[0m" else "";
     _ = writeAll(1, b);
-    _ = writeAll(1, "zvisor " ++ VERSION ++ " - a small, friendly process manager");
+    _ = writeAll(1, "zpawn " ++ VERSION ++ " - a small, friendly process manager");
     _ = writeAll(1, r);
     _ = writeAll(1,
         \\
         \\
-        \\Usage: zvisor <command> [args]
+        \\Usage: zpawn <command> [args]
         \\
         \\  add [--cwd DIR] [--no-restart] NAME CMD...   define and start a process
-        \\  up [FILE]                                    start everything from a Procfile
+        \\  up [FILE]                                    start everything from zpawn.yaml
         \\  ls                                           show processes (default command)
         \\  logs [NAME] [-f] [-n N]                      show output, colors intact; no NAME = all
         \\  start | stop | restart NAME|all
@@ -56,7 +57,7 @@ fn usage(color: bool) void {
     _ = writeAll(1,
         \\One argument after NAME is run by a shell as-is ("a | b" works);
         \\several arguments are quoted individually.
-        \\State lives in ./.pm (nearest parent .pm wins; override with $ZVISOR_HOME).
+        \\State lives in ./.pm (nearest parent .pm wins; override with $ZPAWN_HOME).
     );
     _ = writeAll(1, r);
     _ = writeAll(1, "\n");
@@ -144,7 +145,7 @@ fn transact(home: [:0]const u8, req: *Req, mode: Mode) u8 {
             }
         },
         .need_daemon => {
-            eprint("no daemon running. Start something with `zvisor add` or `zvisor up`.", .{});
+            eprint("no daemon running. Start something with `zpawn add` or `zpawn up`.", .{});
             return 1;
         },
         .optional => {
@@ -219,22 +220,23 @@ fn absPath(path: []const u8) ?[]const u8 {
     return std.mem.span(r);
 }
 
-const Item = struct { name: []const u8, cmd: []const u8 };
-
-fn addItems(home: [:0]const u8, color: bool, cwd: []const u8, restart: bool, replace: bool, items: []const Item) u8 {
+fn addItems(home: [:0]const u8, color: bool, replace: bool, items: []const config.Item) u8 {
     const ts = termSize();
     var req = newReq("add", color);
     defer req.b.deinit();
-    req.str(cwd);
     req.num(ts.cols);
     req.num(ts.rows);
-    req.str(if (restart) "1" else "0");
     req.str(if (replace) "1" else "0");
     req.num(items.len);
     for (items) |it| {
         req.str(it.name);
         req.str(it.cmd);
+        req.str(it.cwd);
+        req.str(if (it.restart) "1" else "0");
+        req.num(it.env.len);
+        for (it.env) |e| req.str(e);
     }
+    // The client's own environment comes last (PATH, HOME...); per-process env wins over it.
     var e = sys.environ;
     while (e[0]) |entry| : (e += 1) req.str(std.mem.span(entry));
     return transact(home, &req, .autostart);
@@ -284,7 +286,7 @@ fn cmdAdd(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
         }
     }
     if (args.len < i + 2) {
-        eprint("usage: zvisor add [--cwd DIR] [--no-restart] NAME CMD...", .{});
+        eprint("usage: zpawn add [--cwd DIR] [--no-restart] NAME CMD...", .{});
         return 2;
     }
     const name = args[i];
@@ -298,7 +300,7 @@ fn cmdAdd(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
             shellQuote(&cmd, a);
         }
     }
-    return addItems(home, color, cwd, restart, false, &.{.{ .name = name, .cmd = cmd.slice() }});
+    return addItems(home, color, false, &.{.{ .name = name, .cmd = cmd.slice(), .cwd = cwd, .restart = restart, .env = &.{} }});
 }
 
 fn readFile(path: []const u8, out: *Buf) bool {
@@ -319,37 +321,47 @@ fn readFile(path: []const u8, out: *Buf) bool {
     }
 }
 
+fn fileExists(path: []const u8) bool {
+    const z = common.dupeZ(path);
+    defer gpa.free(z);
+    return sys.access(z.ptr, 0) == 0;
+}
+
 fn cmdUp(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
-    const file = if (args.len > 0) args[0] else "Procfile";
+    const path: []const u8 = if (args.len > 0) args[0] else if (fileExists("zpawn.yaml"))
+        "zpawn.yaml"
+    else if (fileExists("zpawn.yml"))
+        "zpawn.yml"
+    else {
+        eprint("no zpawn.yaml in this directory (see examples/ for the format)", .{});
+        return 1;
+    };
+
     var text = Buf{};
     defer text.deinit();
-    if (!readFile(file, &text)) {
-        eprint("cannot read {s} (expected lines like `web: npm run dev`)", .{file});
+    if (!readFile(path, &text)) {
+        eprint("cannot read {s}", .{path});
         return 1;
     }
-    const abs = absPath(file) orelse file;
+    const abs = absPath(path) orelse path;
     const slash = std.mem.lastIndexOfScalar(u8, abs, '/') orelse 0;
     const dir = if (slash == 0) "/" else abs[0..slash];
 
-    var items: std.ArrayList(Item) = .empty;
-    defer items.deinit(gpa);
-    var lines = std.mem.splitScalar(u8, text.slice(), '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse {
-            eprint("{s}: ignoring malformed line: {s}", .{ file, line });
-            continue;
-        };
-        const name = std.mem.trim(u8, line[0..colon], " \t");
-        const cmd = std.mem.trim(u8, line[colon + 1 ..], " \t");
-        items.append(gpa, .{ .name = name, .cmd = cmd }) catch return 1;
-    }
-    if (items.items.len == 0) {
-        eprint("{s}: no processes found", .{file});
-        return 1;
-    }
-    return addItems(home, color, dir, true, true, items.items);
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var msg = Buf{};
+    defer msg.deinit();
+    const items = config.parse(arena_state.allocator(), text.slice(), path, dir, &msg) catch |err| switch (err) {
+        error.Invalid => {
+            _ = writeAll(2, msg.slice());
+            return 1;
+        },
+        error.OutOfMemory => {
+            eprint("out of memory", .{});
+            return 1;
+        },
+    };
+    return addItems(home, color, true, items);
 }
 
 // -------------------------------------------------------------- the rest
@@ -389,7 +401,7 @@ fn cmdLogs(home: [:0]const u8, color: bool, args: []const []const u8) u8 {
 
 fn cmdTarget(home: [:0]const u8, color: bool, verb: []const u8, args: []const []const u8) u8 {
     if (args.len != 1) {
-        eprint("usage: zvisor {s} NAME|all", .{verb});
+        eprint("usage: zpawn {s} NAME|all", .{verb});
         return 2;
     }
     var req = newReq(verb, color);
@@ -428,7 +440,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         return 0;
     }
     if (eq(verb, "-v") or eq(verb, "--version") or eq(verb, "version")) {
-        _ = writeAll(1, "zvisor " ++ VERSION ++ "\n");
+        _ = writeAll(1, "zpawn " ++ VERSION ++ "\n");
         return 0;
     }
     if (eq(verb, "ls") or eq(verb, "status") or eq(verb, "ps")) return cmdSimple(home, color, "ls", .optional);

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Simule un worker de file d'attente.
 i=0
+echo "worker ${WORKER_NAME:-?} prêt"
 while true; do
   i=$((i + 1))
   if [ $((i % 5)) -eq 0 ]; then

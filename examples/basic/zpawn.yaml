@@ -1,0 +1,10 @@
+# Trois processus : un site statique, une fausse API et un worker.
+# Change le port avec : PORT=9000 zpawn up
+processes:
+  # Entoure la commande de guillemets dès qu'elle contient { } " # ou « : ».
+  web: "python3 -m http.server ${PORT:-8000}"
+  api: sh ./api.sh
+  worker:
+    cmd: sh ./worker.sh
+    env:
+      WORKER_NAME: billing

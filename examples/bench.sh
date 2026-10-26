@@ -1,17 +1,17 @@
 #!/bin/sh
 # Mesure la consommation du DÉMON (Linux uniquement : lit /proc).
 #
-#   examples/bench.sh [chemin/vers/zvisor]
+#   examples/bench.sh [chemin/vers/zpawn]
 #
 # Mesures :
 #   - repos : CPU, réveils/s et RAM avec les 3 processus de basic/
-#   - client : temps moyen d'un `zvisor ls`
+#   - client : temps moyen d'un `zpawn ls`
 #   - flot  : un processus qui écrit sans arrêt de la sortie colorée, sans suiveur,
 #             avec `logs -f flood`, puis avec `logs -f` (vue globale préfixée).
 #             On rapporte le CPU du démon par Mo de sortie traité, et la RAM finale.
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-Z=${1:-$HERE/../zig-out/bin/zvisor}
+Z=${1:-$HERE/../zig-out/bin/zpawn}
 [ -x "$Z" ] || { echo "binaire introuvable : $Z" >&2; exit 2; }
 export Z PORT=${PORT:-18766}
 TMP=$(mktemp -d)
@@ -54,7 +54,7 @@ s0=$(date +%s%N)
 i=0
 while [ "$i" -lt "$n" ]; do "$Z" ls >/dev/null; i=$((i + 1)); done
 s1=$(date +%s%N)
-awk -v a="$s0" -v b="$s1" -v n="$n" 'BEGIN { printf "client : %.2f ms par `zvisor ls`\n", (b - a) / n / 1e6 }'
+awk -v a="$s0" -v b="$s1" -v n="$n" 'BEGIN { printf "client : %.2f ms par `zpawn ls`\n", (b - a) / n / 1e6 }'
 
 # --- flot de sortie
 "$Z" add flood "yes \"\$(printf '\\033[32mhello world, this is colored output\\033[0m')\"" >/dev/null

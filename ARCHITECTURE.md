@@ -1,14 +1,14 @@
 # Architecture
 
-zvisor est **un seul binaire qui joue deux rôles** : un *démon* qui possède les
+zpawn est **un seul binaire qui joue deux rôles** : un *démon* qui possède les
 processus, et un *client* (la CLI) qui lui envoie des ordres par socket Unix.
 C'est le modèle de supervisor (`supervisord` + `supervisorctl`), avec un protocole
 texte minimal à la place de XML-RPC.
 
 ```
-  zvisor add web ...                                   .pm/
-  zvisor logs -f      ┌──────────────┐  socket Unix   ├── sock
-  zvisor ls     ────► │   client     │ ─────────────► ├── daemon.log
+  zpawn add web ...                                   .pm/
+  zpawn logs -f      ┌──────────────┐  socket Unix   ├── sock
+  zpawn ls     ────► │   client     │ ─────────────► ├── daemon.log
                       │ (main.zig)   │ ◄───────────── └── logs/web.log
                       └──────────────┘   réponse
                                                   ┌─────────────────────────┐
@@ -24,7 +24,7 @@ texte minimal à la place de XML-RPC.
 
 | Fichier | Rôle |
 |---|---|
-| `src/main.zig` | Client : parsing de la CLI, lecture du Procfile, démarrage automatique du démon, envoi de la requête, affichage de la réponse. Aiguille aussi `zvisor daemon` vers le démon. |
+| `src/main.zig` | Client : parsing de la CLI, lecture de `zpawn.yaml` (`src/config.zig`, via la bibliothèque YAML de `vendor/`), démarrage automatique du démon, envoi de la requête, affichage de la réponse. Aiguille aussi `zpawn daemon` vers le démon. |
 | `src/daemon.zig` | Démon : état des processus, PTY, boucle d'événements, commandes, tampon de sortie, formatage des préfixes. |
 | `src/common.zig` | Utilitaires partagés : tampon d'octets extensible (`Buf`), concaténation de chemins, recherche du dossier `.pm`, connexion au socket. |
 | `src/sys.zig` | Déclarations libc écrites à la main (`forkpty`, `poll`, sockets, `waitpid`…) et constantes Linux/macOS. |
@@ -49,7 +49,7 @@ Un dossier **`.pm` dans le répertoire courant** (jamais dans le home) :
 - Le dossier est créé en `0700` : c'est lui qui protège le socket. Quiconque peut
   écrire dans le socket peut exécuter des commandes, donc ne le rends pas accessible
   à d'autres utilisateurs.
-- `homeDir()` choisit le dossier : `$ZVISOR_HOME` s'il est défini ; sinon le `.pm` le plus
+- `homeDir()` choisit le dossier : `$ZPAWN_HOME` s'il est défini ; sinon le `.pm` le plus
   proche (cwd puis parents) qui contient un `sock` ; sinon `./.pm`. Résultat : **un
   démon par projet**, et les commandes de lecture marchent depuis un sous-dossier.
 - Les chemins de socket Unix sont limités à ~108 octets. `connectIn` fait donc un
@@ -82,7 +82,7 @@ vrai si stdout du client est un terminal et que `NO_COLOR` est absent).
 
 | Verbe | Arguments suivants |
 |---|---|
-| `add` | `cwd`, `cols`, `rows`, `restart` (0/1), `replace` (0/1), `n`, `n` × (`nom`, `commande`), puis l'environnement du client (`K=V`…) |
+| `add` | `cols`, `rows`, `replace` (0/1), `n`, `n` × (`nom`, `commande`, `cwd`, `restart` (0/1), `nenv`, `nenv` × `K=V`), puis l'environnement du client (`K=V`…) |
 | `start` `stop` `restart` `rm` | cible (`nom` ou `all`) |
 | `logs` | cible (vide ou `all` = tous), nombre de lignes, `follow` (0/1) |
 | `ls`, `down`, `ping` | aucun |
@@ -91,9 +91,10 @@ Réponse : **un octet de statut** (`O` ou `E`) suivi du texte, éventuellement c
 Le démon ferme la connexion une fois la réponse envoyée, sauf pour `logs -f` (flux
 continu) et `down` (reste ouverte jusqu'à l'arrêt complet).
 
-`up` n'a pas de verbe propre : le client lit le Procfile (`nom: commande`, `#` pour
-les commentaires) et envoie un seul `add` avec `replace=1` et `cwd` = dossier du Procfile.
-Si une définition identique tourne déjà, le démon répond « unchanged » ; si elle a
+`up` n'a pas de verbe propre : le client lit `zpawn.yaml`, résout les `cwd` relatifs au
+dossier du fichier, et envoie un seul `add` avec `replace=1`. Les variables `env` du YAML
+sont des surcharges par processus, appliquées par-dessus l'environnement du client.
+Si une définition identique (commande, cwd, surcharges) tourne déjà, le démon répond « unchanged » ; si elle a
 changé, il redémarre le processus.
 
 ## Le démon
@@ -145,7 +146,7 @@ PTY est celle du terminal du client au moment de l'`add`.
 - **`restart`** : arrêt, puis redémarrage quand la sortie est constatée
   (`restart_pending`). **`rm`** : arrêt, puis suppression au `sweep`.
 - Chaque événement (démarrage, sortie, relance…) est écrit dans le flux du processus
-  sous la forme d'une ligne grisée `[zvisor] …`, donc visible dans `logs`.
+  sous la forme d'une ligne grisée `[zpawn] …`, donc visible dans `logs`.
 
 ## Sortie et couleurs
 
@@ -209,7 +210,7 @@ Mesures sur Linux avec `examples/bench.sh` (3 processus de `examples/basic`, bin
 | RAM après un flot de sortie de 5 s à ~50 Mo/s | ~900 Ko (pic 950 Ko) |
 | Réveils avec des processus silencieux | 0 |
 | CPU par Mo de sortie traité | ~5 à 7 ms (jusqu'à ~13 ms avec `logs -f` global) |
-| Commande client (`zvisor ls`) | ~0,4 ms |
+| Commande client (`zpawn ls`) | ~0,4 ms |
 
 Ce qui fait ces chiffres : pas de minuterie (self-pipe), `waitpid` uniquement sur
 `SIGCHLD`, formatage des couleurs seulement à la demande, historique circulaire à
@@ -219,7 +220,7 @@ environ 25 % de CPU sous un flot soutenu (rien au repos).
 
 ## Arrêt
 
-`zvisor down` (ou `SIGTERM`/`SIGINT` sur le démon) envoie `SIGTERM` à tous les groupes,
+`zpawn down` (ou `SIGTERM`/`SIGINT` sur le démon) envoie `SIGTERM` à tous les groupes,
 attend leur sortie (au plus ~7 s, avec escalade SIGKILL), répond `daemon stopped` au
 client qui a demandé l'arrêt, supprime `sock` et quitte. Les logs et `.gitignore`
 restent dans `.pm`. Si le démon est tué brutalement (`SIGKILL`), les processus perdent
