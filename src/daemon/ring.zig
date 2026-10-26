@@ -5,7 +5,7 @@ const common = @import("../common.zig");
 const Buf = common.Buf;
 const gpa = common.gpa;
 
-pub const RING_MAX: usize = 128 * 1024; // history kept per process
+pub const RING_MAX: usize = 512 * 1024; // history kept per process
 
 /// Fixed-size circular history. Starts tiny and grows (up to RING_MAX) only when
 /// a process actually produces output.

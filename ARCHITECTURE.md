@@ -199,7 +199,7 @@ Le but : ne jamais perdre ni abîmer une couleur. Comme le processus écrit dans
 il croit parler à un terminal et garde ses couleurs. Chaque morceau lu passe par
 `emit()`, qui fait trois choses :
 
-1. **Tampon mémoire** (`ring`) : historique circulaire de 128 Ko au plus par processus.
+1. **Tampon mémoire** (`ring`) : historique circulaire de 512 Ko au plus par processus (environ 5 000 lignes de 100 octets ; il démarre à 4 Ko et ne grandit que pour un processus qui écrit vraiment).
    Il démarre à 4 Ko et ne grossit que si le processus produit vraiment de la sortie ;
    quand il est plein, les octets les plus anciens sont écrasés (aucune recopie).
    `logs` extrait les N dernières lignes de ce tampon.
