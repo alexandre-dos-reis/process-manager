@@ -263,6 +263,31 @@ pub fn stopProc(p: *Proc) void {
     }
 }
 
+/// The signals worth naming in a log; anything else stays a number.
+fn signalName(sig: i32) ?[]const u8 {
+    return switch (sig) {
+        sys.SIGHUP => "SIGHUP",
+        sys.SIGINT => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        sys.SIGKILL => "SIGKILL",
+        11 => "SIGSEGV",
+        sys.SIGPIPE => "SIGPIPE",
+        sys.SIGTERM => "SIGTERM",
+        else => null,
+    };
+}
+
+/// How the process ended, in words: "SIGTERM", "signal 31" or "exit code 1".
+/// Writes into `buf` and returns the part used, so it needs no allocation.
+fn exitStatus(p: *const Proc, buf: []u8) []const u8 {
+    if (p.exit_signal != 0) {
+        if (signalName(p.exit_signal)) |n| return n;
+        return std.fmt.bufPrint(buf, "signal {d}", .{p.exit_signal}) catch "signal ?";
+    }
+    return std.fmt.bufPrint(buf, "exit code {d}", .{p.exit_code}) catch "exit code ?";
+}
+
 pub fn onExit(p: *Proc, status: c_int, now: i64) void {
     health.killCheck(p);
     // Drain what is left, then close the PTY.
@@ -286,7 +311,11 @@ pub fn onExit(p: *Proc, status: c_int, now: i64) void {
     if (p.stopping) {
         p.stopping = false;
         p.state = .stopped;
-        note(p, "stopped", .{});
+        // Say how it ended even though we asked for it: a stop that needed
+        // SIGKILL, or a non-zero code on the way out, is exactly what you want
+        // to find in the log afterwards.
+        var buf: [32]u8 = undefined;
+        note(p, "stopped ({s})", .{exitStatus(p, &buf)});
         if (p.restart_pending) {
             p.restart_pending = false;
             launch(p);
@@ -295,7 +324,8 @@ pub fn onExit(p: *Proc, status: c_int, now: i64) void {
     }
 
     if (p.exit_signal != 0) {
-        note(p, "killed by signal {d}", .{p.exit_signal});
+        var buf: [32]u8 = undefined;
+        note(p, "killed by {s}", .{exitStatus(p, &buf)});
     } else {
         note(p, "exited with code {d}", .{p.exit_code});
     }

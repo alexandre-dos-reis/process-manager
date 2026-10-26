@@ -151,6 +151,7 @@ now "tty: false : les notes du log n'ont pas de \\r" '! grep -q "$(printf "zpawn
 GK=$(sed -n 's/.*petitfils \([0-9]*\).*/\1/p' .zpawn/logs/sans.log | head -1)
 now "tty: false : le petit-fils tourne" '[ -n "$GK" ] && kill -0 "$GK" 2>/dev/null'
 "$Z" kill sans >/dev/null
+check "arrêt : le motif est consigné" 'grep -q "stopped (SIGTERM)" .zpawn/logs/sans.log'
 check "tty: false : le groupe entier est tué" '! kill -0 "$GK" 2>/dev/null'
 # Changer tty rebascule entre forkpty et pipe : seul un redémarrage l'applique,
 # et cela ne se voit que sur un service en cours.

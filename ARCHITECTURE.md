@@ -197,9 +197,11 @@ et la taille du PTY est celle du terminal du client au moment du `up` ; sans PTY
 - **`restart`** : arrêt, puis redémarrage quand la sortie est constatée
   (`restart_pending`). **`rm`** : arrêt, puis suppression au `sweep`.
 - Chaque événement (démarrage, sortie, relance…) est écrit dans le flux du processus
-  sous la forme d'une ligne grisée `[zpawn] …`, donc visible dans `logs`. Elle se
-  termine par `\r\n` sur un PTY et par `\n` sur un tuyau, où un `\r` ne serait
-  qu'un `^M` dans le fichier.
+  sous la forme d'une ligne grisée `[zpawn] …`, donc visible dans `logs`. Elle dit
+  **comment** le processus s'est terminé, y compris quand l'arrêt était demandé :
+  `stopped (SIGTERM)`, `stopped (exit code 143)`, `killed by SIGSEGV`,
+  `exited with code 1`. La ligne se termine par `\r\n` sur un PTY et par `\n` sur un
+  tuyau, où un `\r` ne serait qu'un `^M` dans le fichier.
 
 ## Sortie et couleurs
 
