@@ -142,6 +142,10 @@ Rien n'est libéré en plein milieu d'un tour : les suppressions sont marquées
 Chaque processus (`Proc`) est lancé avec **`forkpty`** : il reçoit un pseudo-terminal
 comme stdin/stdout/stderr et devient chef de sa propre session et de son groupe.
 Il tourne via `/bin/sh -c "<commande>"` (les pipes, `&&` et variables marchent),
+sauf qu'une commande **simple** (`node server.js`, sans guillemets, `$`, pipe ni
+affectation) est lancée avec `exec` : le processus remplace le shell, reçoit donc les
+signaux directement, et ses dernières lignes ne se perdent pas si un shell intermédiaire
+mourait avant lui (c'est ce que l'exemple `examples/node` a révélé),
 dans le `cwd` demandé, avec l'**environnement du client** qui a fait `up`
 (PATH inclus). `TERM` vaut `xterm-256color` s'il manque ou vaut `dumb`. La taille du
 PTY est celle du terminal du client au moment du `up`.

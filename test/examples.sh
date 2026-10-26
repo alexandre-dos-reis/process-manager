@@ -7,8 +7,8 @@
 # Prérequis : python3 (serveur HTTP de basic/).
 . "$(dirname "$0")/lib.sh"
 
-cp -R "$ROOT/examples/basic" "$ROOT/examples/colors" "$ROOT/examples/crashy" "$TMP"/
-for d in basic colors crashy; do watch "$TMP/$d"; done
+cp -R "$ROOT/examples/basic" "$ROOT/examples/colors" "$ROOT/examples/crashy" "$ROOT/examples/node" "$TMP"/
+for d in basic colors crashy node; do watch "$TMP/$d"; done
 
 echo "== basic : 3 processus"
 cd "$TMP/basic" || exit 2
@@ -52,5 +52,24 @@ if [ "${FULL:-0}" = 1 ]; then
 fi
 "$Z" down >/dev/null
 check "down propre : plus de démon" '"$Z" ls | grep -q "daemon not running"'
+
+echo "== node : une vraie appli"
+if ! command -v node >/dev/null 2>&1; then
+  echo "  (node absent : section ignorée)"
+else
+  cd "$TMP/node" || exit 2
+  "$Z" up -d >/dev/null
+  check "l'API répond en JSON" 'curl -fs "http://127.0.0.1:$PORT/health" | grep -q "\"ok\":true"'
+  check "migrate s'est terminé et n'est pas relancé" '[ "$(state_of migrate)" = exited ] && [ "$(state_of migrate | wc -l)" = 1 ]'
+  now "migrate : sortie complète" '"$Z" logs migrate | grep -q "migrations terminées"'
+  check "NODE_ENV du YAML vu par l'API" '"$Z" logs api | grep -q "(development)"'
+  check "QUEUE du YAML vue par le worker" '"$Z" logs worker | grep -q "(emails)"'
+  now "404 en jaune dans les logs de l'API" 'curl -s "http://127.0.0.1:$PORT/nope" >/dev/null; sleep 0.3; "$Z" logs api | grep -q "${ESC}\[33m404${ESC}\[0m"'
+  now "500 en rouge + stderr capturé" 'curl -s "http://127.0.0.1:$PORT/api/boom" >/dev/null; sleep 0.3; "$Z" logs api | grep -q "${ESC}\[31m500${ESC}\[0m" && "$Z" logs api | grep -q "Error: boom"'
+  "$Z" kill api >/dev/null
+  check "arrêt en douceur : l'API a reçu SIGTERM" '"$Z" logs api | grep -q "serveur fermé"'
+  now "le serveur HTTP est coupé" '! curl -fs "http://127.0.0.1:$PORT/health"'
+  "$Z" down >/dev/null
+fi
 
 summary

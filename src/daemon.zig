@@ -460,6 +460,21 @@ fn readPty(p: *Proc) bool {
     return len == buf.len;
 }
 
+/// Words, paths and simple flags only: no quoting, expansion, pipes, assignments or builtins.
+fn isPlainCommand(cmd: []const u8) bool {
+    if (cmd.len == 0) return false;
+    for (cmd) |ch| {
+        if (!(std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, " _-./:@%+,", ch) != null)) return false;
+    }
+    const first = std.mem.sliceTo(std.mem.trimStart(u8, cmd, " "), ' ');
+    if (first.len == 0) return false;
+    const builtins = [_][]const u8{ "cd", "export", "set", "unset", "exit", "trap", "wait", "source", ".", "eval", "exec", "read", "ulimit", "umask", "alias", "true", "false", ":" };
+    for (builtins) |b| {
+        if (std.mem.eql(u8, first, b)) return false;
+    }
+    return true;
+}
+
 fn envKey(e: []const u8) []const u8 {
     return e[0 .. std.mem.indexOfScalar(u8, e, '=') orelse e.len];
 }
@@ -494,6 +509,11 @@ fn startProc(p: *Proc) void {
     if (!has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
     envp.append(gpa, null) catch @panic("oom");
 
+    // A plain command (`node server.js`) is exec'd so it replaces the shell: signals reach it
+    // directly and its last words are not lost when a middleman shell dies first.
+    const sh_cmd: [:0]u8 = if (isPlainCommand(p.cmd)) common.joinZ(&.{ "exec ", p.cmd }) else common.dupeZ(p.cmd);
+    defer gpa.free(sh_cmd);
+
     var ws = sys.Winsize{ .row = p.rows, .col = p.cols };
     var master: c_int = -1;
     const pid = sys.forkpty(&master, null, null, &ws);
@@ -512,7 +532,7 @@ fn startProc(p: *Proc) void {
             _ = sys.write(2, msg, msg.len);
             sys._exit(127);
         }
-        const argv = [_:null]?[*:0]const u8{ "sh", "-c", p.cmd.ptr };
+        const argv = [_:null]?[*:0]const u8{ "sh", "-c", sh_cmd.ptr };
         const ep: [*:null]const ?[*:0]const u8 = @ptrCast(envp.items.ptr);
         _ = sys.execve("/bin/sh", &argv, ep);
         sys._exit(127);

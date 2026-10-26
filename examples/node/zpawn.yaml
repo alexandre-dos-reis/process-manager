@@ -1,0 +1,20 @@
+# Une vraie petite appli Node (sans dépendance, juste `node`) :
+#   migrate : script ponctuel, ne redémarre pas une fois terminé
+#   api     : serveur HTTP sur le port 3000 (PORT=4000 zpawn up pour changer)
+#   worker  : consommateur de file, avec une variable d'environnement dédiée
+#
+#   zpawn up                    # tout défile, Ctrl-C arrête
+#   curl localhost:3000/api/time
+#   curl localhost:3000/api/boom   # une erreur 500 + stack en rouge dans les logs
+processes:
+  migrate:
+    cmd: node migrate.js
+    restart: false
+  api:
+    cmd: node server.js
+    env:
+      NODE_ENV: development
+  worker:
+    cmd: node worker.js
+    env:
+      QUEUE: emails
