@@ -45,8 +45,8 @@ fn usage(color: bool) void {
         \\Usage: zpawn <command> [options]
         \\
         \\  init                    create a basic zpawn.yaml
-        \\  up [-d] [-f FILE]       start everything; stays attached (Ctrl-C stops it), -d detaches
-        \\  down                    stop everything started with `up -d`
+        \\  up [-d] [-f FILE]       start everything from FILE (default zpawn.yaml); stays attached (Ctrl-C stops it), -d detaches
+        \\  down [-f FILE]          stop everything started with `up -d`
         \\  ls                      show processes (default command)
         \\  logs [SERVICE] [-f] [-n N]   output, colors intact (no SERVICE: all, prefixed)
         \\  restart [SERVICE]       restart (or start) one service, or all
@@ -376,6 +376,20 @@ fn attach(home: [:0]const u8, color: bool) u8 {
 
 // --------------------------------------------------------------- commands
 
+/// With `-f FILE`, the project is the directory that holds FILE: its state lives in
+/// FILE's `.pm`, whatever the current directory is (unless $ZPAWN_HOME says otherwise).
+fn homeForFile(file: ?[]const u8, default_home: [:0]const u8) ?[:0]const u8 {
+    const f = file orelse return default_home;
+    if (sys.getenv("ZPAWN_HOME") != null) return default_home;
+    const abs = absPath(f) orelse {
+        eprint("cannot find {s}", .{f});
+        return null;
+    };
+    const slash = std.mem.lastIndexOfScalar(u8, abs, '/') orelse 0;
+    const dir = if (slash == 0) "" else abs[0..slash];
+    return common.joinZ(&.{ dir, "/.pm" });
+}
+
 const Parsed = struct {
     fn Of(comptime params: []const clap.Param(clap.Help)) type {
         return clap.ResultEx(clap.Help, params, clap.parsers.default);
@@ -475,9 +489,10 @@ fn cmdUp(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator) u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const items = loadConfig(arena_state.allocator(), res.args.file) orelse return 1;
-    const rc = addItems(home, color, true, items);
+    const proj = homeForFile(res.args.file, home) orelse return 1;
+    const rc = addItems(proj, color, true, items);
     if (rc != 0 or res.args.detach != 0) return rc;
-    return attach(home, color);
+    return attach(proj, color);
 }
 
 fn cmdLogs(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator) u8 {
@@ -530,6 +545,19 @@ fn cmdPlain(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator, compt
     var res = parseSub(&params, it, name, &code) orelse return code;
     res.deinit();
     return cmdSimple(home, color, verb, .optional);
+}
+
+fn cmdDown(home: [:0]const u8, color: bool, it: *clap.args.SliceIterator) u8 {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help         Show this help.
+        \\-f, --file <str>   Stop the project of this config file (default: the one found from here).
+        \\
+    );
+    var code: u8 = 0;
+    var res = parseSub(&params, it, "down [-f FILE]", &code) orelse return code;
+    defer res.deinit();
+    const proj = homeForFile(res.args.file, home) orelse return 1;
+    return cmdSimple(proj, color, "down", .optional);
 }
 
 const Command = enum { init, up, down, ls, logs, restart, kill, help };
@@ -596,7 +624,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         },
         .init => cmdInit(&it),
         .up => cmdUp(home, color, &it),
-        .down => cmdPlain(home, color, &it, "down", "down"),
+        .down => cmdDown(home, color, &it),
         .ls => cmdPlain(home, color, &it, "ls", "ls"),
         .logs => cmdLogs(home, color, &it),
         .restart => cmdTarget(home, color, &it, "restart", "restart"),

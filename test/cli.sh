@@ -48,8 +48,8 @@ now "dossier .pm avec .gitignore" '[ -f .pm/.gitignore ]'
 now "up -d relancé : unchanged" '"$Z" up -d | grep -c unchanged | grep -q 2'
 now "sans argument : tableau d'état" '"$Z" | grep -q worker'
 now "depuis un sous-dossier" 'mkdir -p sub && (cd sub && "$Z" ls | grep -q web)'
-now "up -f chemin explicite" 'printf "processes:\n  extra: sleep 600\n" > "$TMP/other.yaml" && "$Z" up -d -f "$TMP/other.yaml" | grep -q "extra .*started"'
-now "up retire ce qui n'est plus dans le fichier" '"$Z" up -d -f "$TMP/other.yaml" >/dev/null; "$Z" ls | grep -q extra'
+now "up -f chemin explicite" 'printf "processes:\n  extra: sleep 600\n" > "$P/other.yaml" && "$Z" up -d -f "$P/other.yaml" | grep -q "extra .*started"'
+now "up retire ce qui n'est plus dans le fichier" '"$Z" up -d -f "$P/other.yaml" >/dev/null; "$Z" ls | grep -q extra'
 check "web et worker ont disparu de la liste" '! "$Z" ls | grep -q "web\|worker"'
 "$Z" up -d >/dev/null
 check "retour au zpawn.yaml : 2 processus, extra retiré" '[ "$(state_of web)" = running ] && [ "$(state_of worker)" = running ] && ! "$Z" ls | grep -q extra'
@@ -92,6 +92,18 @@ echo "== down"
 check "down : plus de démon" '"$Z" ls | grep -q "daemon not running"'
 now "down : socket supprimé" '[ ! -S .pm/sock ]'
 now "down sans démon : sans erreur" '"$Z" down >/dev/null 2>&1'
+
+echo "== -f : up et down depuis un autre dossier"
+mkdir -p "$TMP/elsewhere" "$TMP/away"
+watch "$TMP/elsewhere"
+printf 'processes:\n  solo: sleep 600\n' > "$TMP/elsewhere/zpawn.yaml"
+now "up -d -f démarre le projet du fichier" '(cd "$TMP/away" && "$Z" up -d -f "$TMP/elsewhere/zpawn.yaml" | grep -q "solo .*started")'
+now "l'état est dans le dossier du fichier" '[ -S "$TMP/elsewhere/.pm/sock" ] && [ ! -e "$TMP/away/.pm" ]'
+now "ls depuis ce dossier voit le service" '(cd "$TMP/elsewhere" && "$Z" ls | grep -q solo)'
+now "down -f arrête ce projet" '(cd "$TMP/away" && "$Z" down -f "$TMP/elsewhere/zpawn.yaml" | grep -q "daemon stopped")'
+check "le démon du fichier est arrêté" '[ ! -S "$TMP/elsewhere/.pm/sock" ]'
+now "down -f fichier absent : erreur" '"$Z" down -f "$TMP/nope.yaml" 2>&1 | grep -q "cannot find"'
+now "down -h décrit -f" '"$Z" down -h | grep -q -- "--file"'
 
 echo "== up attaché (Ctrl-C)"
 "$Z" up >attached.out 2>&1 &

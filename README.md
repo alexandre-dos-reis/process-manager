@@ -42,6 +42,7 @@ zpawn logs web -n 500
 zpawn restart web           # redémarre (ou démarre) un service ; sans nom : tous
 zpawn kill web              # arrête un service ; sans nom : tous
 zpawn down                  # arrête tout et quitte le démon
+zpawn up -f chemin/zpawn.yaml    # autre fichier ; `zpawn down -f chemin/zpawn.yaml` l'arrête
 ```
 
 `zpawn <commande> -h` détaille les options. L'analyse des arguments est faite par
@@ -50,6 +51,10 @@ zpawn down                  # arrête tout et quitte le démon
 - `up` attaché : les sorties de tous les services défilent avec leur préfixe. Au
   Ctrl-C (ou si un autre terminal lance `zpawn down`), tout est arrêté proprement.
 - `up -d` : le démon continue sans terminal ; `zpawn down` l'arrête.
+- `-f FICHIER` (sur `up` et `down`, facultatif) désigne le projet par son fichier : l'état
+  est alors dans le `.pm` **du dossier de ce fichier**, d'où que tu lances la commande.
+  Les autres commandes (`ls`, `logs`, `kill`, `restart`) retrouvent le projet en
+  remontant depuis le dossier courant, ou via `$ZPAWN_HOME`.
 - `kill` arrête un service mais laisse le démon en vie (`restart` le relance).
 - `logs SERVICE` renvoie les octets tels quels, sans préfixe ; sans service, les
   lignes sont préfixées pour distinguer les sources.
