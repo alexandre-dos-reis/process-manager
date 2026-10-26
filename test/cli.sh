@@ -24,7 +24,7 @@ now "option inconnue : message" '"$Z" up --nope 2>&1 | grep -q "Invalid argument
 now "up -h décrit --detach" '"$Z" up -h | grep -q -- "--detach"'
 now "kill -h décrit SERVICE" '"$Z" kill -h | grep -q "SERVICE"'
 now "up sans fichier : message clair" '"$Z" up 2>&1 | grep -q "zpawn init"'
-now "aucun démon créé par une erreur" '[ ! -S .pm/sock ]'
+now "aucun démon créé par une erreur" '[ ! -S .zpawn/sock ]'
 now "ls sans démon" '"$Z" ls | grep -q "daemon not running"'
 now "kill sans démon : message" '"$Z" kill 2>&1 | grep -q "no daemon running"'
 
@@ -44,7 +44,7 @@ now "rend la main (code 0, < 5 s)" '[ "$rc" = 0 ] && [ "$elapsed" -lt 5 ]'
 now "annonce web et worker" 'grep -q "web .*started" up1.out && grep -q "worker .*started" up1.out'
 check "2 processus en cours" '[ "$("$Z" ls | grep -c running)" = 2 ]'
 check "le serveur HTTP répond" 'curl -fs "http://127.0.0.1:$PORT/" -o /dev/null'
-now "dossier .pm avec .gitignore" '[ -f .pm/.gitignore ]'
+now "dossier .zpawn avec .gitignore" '[ -f .zpawn/.gitignore ]'
 now "up -d relancé : unchanged" '"$Z" up -d | grep -c unchanged | grep -q 2'
 now "sans argument : tableau d'état" '"$Z" | grep -q worker'
 now "depuis un sous-dossier" 'mkdir -p sub && (cd sub && "$Z" ls | grep -q web)'
@@ -90,7 +90,7 @@ now "restart d'un service inconnu" '"$Z" restart ghost 2>&1 | grep -q "no proces
 echo "== down"
 "$Z" down >/dev/null
 check "down : plus de démon" '"$Z" ls | grep -q "daemon not running"'
-now "down : socket supprimé" '[ ! -S .pm/sock ]'
+now "down : socket supprimé" '[ ! -S .zpawn/sock ]'
 now "down sans démon : sans erreur" '"$Z" down >/dev/null 2>&1'
 
 echo "== -f : up et down depuis un autre dossier"
@@ -98,10 +98,10 @@ mkdir -p "$TMP/elsewhere" "$TMP/away"
 watch "$TMP/elsewhere"
 printf 'processes:\n  solo: sleep 600\n' > "$TMP/elsewhere/zpawn.yaml"
 now "up -d -f démarre le projet du fichier" '(cd "$TMP/away" && "$Z" up -d -f "$TMP/elsewhere/zpawn.yaml" | grep -q "solo .*started")'
-now "l'état est dans le dossier du fichier" '[ -S "$TMP/elsewhere/.pm/sock" ] && [ ! -e "$TMP/away/.pm" ]'
+now "l'état est dans le dossier du fichier" '[ -S "$TMP/elsewhere/.zpawn/sock" ] && [ ! -e "$TMP/away/.zpawn" ]'
 now "ls depuis ce dossier voit le service" '(cd "$TMP/elsewhere" && "$Z" ls | grep -q solo)'
 now "down -f arrête ce projet" '(cd "$TMP/away" && "$Z" down -f "$TMP/elsewhere/zpawn.yaml" | grep -q "daemon stopped")'
-check "le démon du fichier est arrêté" '[ ! -S "$TMP/elsewhere/.pm/sock" ]'
+check "le démon du fichier est arrêté" '[ ! -S "$TMP/elsewhere/.zpawn/sock" ]'
 now "down -f fichier absent : erreur" '"$Z" down -f "$TMP/nope.yaml" 2>&1 | grep -q "cannot find"'
 now "down -h décrit -f" '"$Z" down -h | grep -q -- "--file"'
 

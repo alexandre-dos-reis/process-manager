@@ -10,7 +10,7 @@ zig build                      # depuis la racine du dépôt
 export PATH="$PWD/zig-out/bin:$PATH"
 ```
 
-Chaque dossier d'exemple a son propre démon et son propre `.pm`, donc on peut les
+Chaque dossier d'exemple a son propre démon et son propre `.zpawn`, donc on peut les
 lancer l'un après l'autre sans qu'ils se mélangent. Termine toujours par `zpawn down` (ou lance `zpawn up` sans `-d` et fais Ctrl-C).
 
 ## 1. `basic/` : trois processus
@@ -51,7 +51,7 @@ trois lignes plus tard. En vue globale, le préfixe `colors |` est inséré à c
 ligne, et la couleur doit être réappliquée juste après : les lignes 1 et 2 restent
 violettes, la 3 repasse en normal.
 
-Pour relire le fichier de log brut avec les couleurs : `less -R .pm/logs/colors.log`.
+Pour relire le fichier de log brut avec les couleurs : `less -R .zpawn/logs/colors.log`.
 
 ## 3. `crashy/` : pannes et arrêts forcés
 
@@ -81,5 +81,5 @@ Il rapporte, pour le démon : réveils par seconde et CPU au repos, RAM, temps d
 Ils sont dans [`../test/`](../test/README.md) : `test/run.sh` lance tout,
 `test/examples.sh` rejoue les trois scénarios ci-dessus.
 
-Un `.pm` créé dans `examples/` n'est jamais commité : il contient son propre
+Un `.zpawn` créé dans `examples/` n'est jamais commité : il contient son propre
 `.gitignore`.

@@ -24,14 +24,14 @@ trap cleanup EXIT INT TERM
 cp -R "$HERE/basic" "$TMP"/
 cd "$TMP/basic" || exit 2
 
-dpid() { pgrep -f "daemon $TMP/basic/.pm" | head -1; }
+dpid() { pgrep -f "daemon $TMP/basic/.zpawn" | head -1; }
 ticks() { awk '{print $14 + $15}' "/proc/$1/stat"; }
 ctxt() { awk '/voluntary_ctxt_switches/ && !/nonvoluntary/ {print $2}' "/proc/$1/status"; }
 rss() { awk '/VmRSS/ {print $2}' "/proc/$1/status"; }
 hwm() { awk '/VmHWM/ {print $2}' "/proc/$1/status"; }
 
-# NOLOG=1 : on remplace .pm/logs par un fichier, donc le démon ne peut pas écrire de log disque.
-if [ "${NOLOG:-0}" = 1 ]; then mkdir .pm && : >.pm/logs; fi
+# NOLOG=1 : on remplace .zpawn/logs par un fichier, donc le démon ne peut pas écrire de log disque.
+if [ "${NOLOG:-0}" = 1 ]; then mkdir .zpawn && : >.zpawn/logs; fi
 "$Z" up -d >/dev/null
 sleep 3
 P=$(dpid)

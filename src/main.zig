@@ -58,7 +58,7 @@ fn usage(color: bool) void {
     );
     _ = writeAll(1, d);
     _ = writeAll(1,
-        \\State lives in ./.pm (nearest parent .pm wins; override with $ZPAWN_HOME).
+        \\State lives in ./.zpawn (nearest parent .zpawn wins; override with $ZPAWN_HOME).
     );
     _ = writeAll(1, r);
     _ = writeAll(1, "\n");
@@ -377,7 +377,7 @@ fn attach(home: [:0]const u8, color: bool) u8 {
 // --------------------------------------------------------------- commands
 
 /// With `-f FILE`, the project is the directory that holds FILE: its state lives in
-/// FILE's `.pm`, whatever the current directory is (unless $ZPAWN_HOME says otherwise).
+/// FILE's `.zpawn`, whatever the current directory is (unless $ZPAWN_HOME says otherwise).
 fn homeForFile(file: ?[]const u8, default_home: [:0]const u8) ?[:0]const u8 {
     const f = file orelse return default_home;
     if (sys.getenv("ZPAWN_HOME") != null) return default_home;
@@ -387,7 +387,7 @@ fn homeForFile(file: ?[]const u8, default_home: [:0]const u8) ?[:0]const u8 {
     };
     const slash = std.mem.lastIndexOfScalar(u8, abs, '/') orelse 0;
     const dir = if (slash == 0) "" else abs[0..slash];
-    return common.joinZ(&.{ dir, "/.pm" });
+    return common.joinZ(&.{ dir, "/.zpawn" });
 }
 
 const Parsed = struct {

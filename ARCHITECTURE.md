@@ -6,7 +6,7 @@ C'est le modèle de supervisor (`supervisord` + `supervisorctl`), avec un protoc
 texte minimal à la place de XML-RPC.
 
 ```
-  zpawn up / up -d                                    .pm/
+  zpawn up / up -d                                    .zpawn/
   zpawn logs -f      ┌──────────────┐  socket Unix   ├── sock
   zpawn ls     ────► │   client     │ ─────────────► ├── daemon.log
                       │ (main.zig)   │ ◄───────────── └── logs/web.log
@@ -26,7 +26,7 @@ texte minimal à la place de XML-RPC.
 |---|---|
 | `src/main.zig` | Client : sous-commandes (`init`, `up`, `down`, `kill`, `restart`, `logs`, `ls`) analysées par zig-clap (`vendor/zig-clap/`), mode attaché de `up` (diffusion des logs, Ctrl-C → `down`), lecture de `zpawn.yaml` (`src/config.zig`, via la bibliothèque YAML de `vendor/`), démarrage automatique du démon, envoi de la requête, affichage de la réponse. Aiguille aussi `zpawn daemon` vers le démon. |
 | `src/daemon.zig` | Démon : état des processus, PTY, boucle d'événements, commandes, tampon de sortie, formatage des préfixes. |
-| `src/common.zig` | Utilitaires partagés : tampon d'octets extensible (`Buf`), concaténation de chemins, recherche du dossier `.pm`, connexion au socket. |
+| `src/common.zig` | Utilitaires partagés : tampon d'octets extensible (`Buf`), concaténation de chemins, recherche du dossier `.zpawn`, connexion au socket. |
 | `src/sys.zig` | Déclarations libc écrites à la main (`forkpty`, `poll`, sockets, `waitpid`…) et constantes Linux/macOS. |
 | `test/` | Tests : `config_test.zig` (unitaires), `cli.sh`, `examples.sh`, `run.sh`. Jamais de tests dans `src/`. |
 
@@ -37,10 +37,10 @@ et les listes.
 
 ## Où vit l'état
 
-Un dossier **`.pm` dans le répertoire courant** (jamais dans le home) :
+Un dossier **`.zpawn` dans le répertoire courant** (jamais dans le home) :
 
 ```
-.pm/
+.zpawn/
 ├── sock          socket Unix du démon
 ├── daemon.log    stdout/stderr du démon
 ├── logs/         <nom>.log (sortie brute) et <nom>.log.1 après rotation
@@ -50,11 +50,11 @@ Un dossier **`.pm` dans le répertoire courant** (jamais dans le home) :
 - Le dossier est créé en `0700` : c'est lui qui protège le socket. Quiconque peut
   écrire dans le socket peut exécuter des commandes, donc ne le rends pas accessible
   à d'autres utilisateurs.
-- `homeDir()` choisit le dossier : `$ZPAWN_HOME` s'il est défini ; sinon le `.pm` le plus
-  proche (cwd puis parents) qui contient un `sock` ; sinon `./.pm`. Résultat : **un
+- `homeDir()` choisit le dossier : `$ZPAWN_HOME` s'il est défini ; sinon le `.zpawn` le plus
+  proche (cwd puis parents) qui contient un `sock` ; sinon `./.zpawn`. Résultat : **un
   démon par projet**, et les commandes de lecture marchent depuis un sous-dossier.
 - Les chemins de socket Unix sont limités à ~108 octets. `connectIn` fait donc un
-  `chdir` dans `.pm` et se connecte à `"sock"` en chemin relatif. Le démon fait de
+  `chdir` dans `.zpawn` et se connecte à `"sock"` en chemin relatif. Le démon fait de
   même : il ne change plus de dossier courant après son démarrage.
 
 ## Vie d'une commande
@@ -71,7 +71,7 @@ Un dossier **`.pm` dans le répertoire courant** (jamais dans le home) :
 Le client fait `fork()`. L'enfant : `setsid()` (se détache du terminal), redirige
 stdin vers `/dev/null` et stdout/stderr vers `daemon.log`, puis `execve` sur
 lui-même (`/proc/self/exe`) avec `daemon <home>`. Le client réessaie ensuite la
-connexion jusqu'à 5 s. Côté démon : création de `.pm`, test d'un démon déjà présent
+connexion jusqu'à 5 s. Côté démon : création de `.zpawn`, test d'un démon déjà présent
 (connexion qui réussit → il quitte), suppression d'un `sock` périmé, `bind`/`listen`,
 sockets non bloquants et `FD_CLOEXEC`, `SIGPIPE` ignoré, `SIGTERM`/`SIGINT` → arrêt propre.
 
@@ -170,7 +170,7 @@ il croit parler à un terminal et garde ses couleurs. Chaque morceau lu passe pa
    Il démarre à 4 Ko et ne grossit que si le processus produit vraiment de la sortie ;
    quand il est plein, les octets les plus anciens sont écrasés (aucune recopie).
    `logs` extrait les N dernières lignes de ce tampon.
-2. **Fichier** `.pm/logs/<nom>.log` : octets bruts (avec les séquences ANSI), rotation à
+2. **Fichier** `.zpawn/logs/<nom>.log` : octets bruts (avec les séquences ANSI), rotation à
    10 Mo vers `.log.1`. À relire avec `less -R`.
 3. **Abonnés** (`logs -f`) : les octets sont copiés dans le tampon d'envoi de chaque
    client concerné.
@@ -235,7 +235,7 @@ environ 25 % de CPU sous un flot soutenu (rien au repos).
 `zpawn down` (ou `SIGTERM`/`SIGINT` sur le démon) envoie `SIGTERM` à tous les groupes,
 attend leur sortie (au plus ~7 s, avec escalade SIGKILL), répond `daemon stopped` au
 client qui a demandé l'arrêt, supprime `sock` et quitte. Les logs et `.gitignore`
-restent dans `.pm`. Si le démon est tué brutalement (`SIGKILL`), les processus perdent
+restent dans `.zpawn`. Si le démon est tué brutalement (`SIGKILL`), les processus perdent
 leur PTY et reçoivent `SIGHUP`.
 
 ## Limites et pistes

@@ -52,7 +52,7 @@ zpawn up -f chemin/zpawn.yaml    # autre fichier ; `zpawn down -f chemin/zpawn.y
   Ctrl-C (ou si un autre terminal lance `zpawn down`), tout est arrêté proprement.
 - `up -d` : le démon continue sans terminal ; `zpawn down` l'arrête.
 - `-f FICHIER` (sur `up` et `down`, facultatif) désigne le projet par son fichier : l'état
-  est alors dans le `.pm` **du dossier de ce fichier**, d'où que tu lances la commande.
+  est alors dans le `.zpawn` **du dossier de ce fichier**, d'où que tu lances la commande.
   Les autres commandes (`ls`, `logs`, `kill`, `restart`) retrouvent le projet en
   remontant depuis le dossier courant, ou via `$ZPAWN_HOME`.
 - `kill` arrête un service mais laisse le démon en vie (`restart` le relance).
@@ -85,16 +85,16 @@ pas dans son fonctionnement et son empreinte mémoire ne change pas.
 
 ## Où sont les données
 
-Rien n'est écrit dans le home. L'état est dans un dossier **`.pm` du répertoire
+Rien n'est écrit dans le home. L'état est dans un dossier **`.zpawn` du répertoire
 courant** : `sock`, `daemon.log`, `logs/<nom>.log` (sortie brute avec couleurs,
 rotation à 10 Mo → `.log.1`) et un `.gitignore` interne (`*`) pour ne pas le
-committer. Pour relire un log avec couleurs : `less -R .pm/logs/web.log`.
+committer. Pour relire un log avec couleurs : `less -R .zpawn/logs/web.log`.
 
 - Il y a **un démon par projet** : deux dossiers différents = deux gestionnaires
   indépendants.
-- Comme git, `zpawn` remonte les dossiers parents pour trouver un `.pm` actif :
+- Comme git, `zpawn` remonte les dossiers parents pour trouver un `.zpawn` actif :
   `zpawn ls` fonctionne depuis un sous-dossier du projet. `up` crée
-  `.pm` dans le dossier où tu les lances s'il n'y en a pas.
+  `.zpawn` dans le dossier où tu les lances s'il n'y en a pas.
 - `$ZPAWN_HOME` force un autre emplacement.
 
 ## Limites connues

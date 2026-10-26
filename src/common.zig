@@ -88,12 +88,12 @@ pub fn dupeZ(s: []const u8) [:0]u8 {
     return joinZ(&.{s});
 }
 
-/// State directory: $ZPAWN_HOME if set, else the nearest `.pm` directory that
+/// State directory: $ZPAWN_HOME if set, else the nearest `.zpawn` directory that
 /// has a live socket in the current directory or one of its parents (like git),
-/// else `./.pm`. Nothing is ever written to the user's home directory.
+/// else `./.zpawn`. Nothing is ever written to the user's home directory.
 pub fn homeDir() [:0]u8 {
     var buf: [4096]u8 = undefined;
-    const cwd_p = sys.getcwd(&buf, buf.len) orelse return dupeZ(".pm");
+    const cwd_p = sys.getcwd(&buf, buf.len) orelse return dupeZ(".zpawn");
     const cwd = std.mem.span(cwd_p);
 
     if (sys.getenv("ZPAWN_HOME")) |p| {
@@ -104,14 +104,14 @@ pub fn homeDir() [:0]u8 {
 
     var dir: []const u8 = cwd;
     while (true) {
-        const probe = joinZ(&.{ if (dir.len == 1) "" else dir, "/.pm/sock" });
+        const probe = joinZ(&.{ if (dir.len == 1) "" else dir, "/.zpawn/sock" });
         defer gpa.free(probe);
-        if (sys.access(probe.ptr, 0) == 0) return joinZ(&.{ if (dir.len == 1) "" else dir, "/.pm" });
+        if (sys.access(probe.ptr, 0) == 0) return joinZ(&.{ if (dir.len == 1) "" else dir, "/.zpawn" });
         if (dir.len <= 1) break;
         const slash = std.mem.lastIndexOfScalar(u8, dir, '/') orelse break;
         dir = if (slash == 0) "/" else dir[0..slash];
     }
-    return joinZ(&.{ if (cwd.len == 1) "" else cwd, "/.pm" });
+    return joinZ(&.{ if (cwd.len == 1) "" else cwd, "/.zpawn" });
 }
 
 /// Connect to the daemon whose state directory is `home`. Returns -1 on failure.
