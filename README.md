@@ -120,3 +120,7 @@ zig build test               # tests unitaires seulement (test/config_test.zig)
 ## Contribuer et releases
 
 Commits en [Conventional Commits](CONTRIBUTING.md), releases automatiques par release-please : voir [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licence
+
+[MIT](LICENSE). Les bibliothèques copiées dans `vendor/` (zig-yaml, zig-clap) gardent leur propre licence MIT.
