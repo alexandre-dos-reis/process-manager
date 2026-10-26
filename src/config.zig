@@ -5,6 +5,7 @@
 //!     cmd: python3 -m http.server 8000   # required
 //!     cwd: ./web                         # optional, relative to this file
 //!     restart: false                     # optional, default true
+//!     tty: false                         # optional, default true (no pseudo-terminal)
 //!     env:                               # optional, added to the client's environment
 //!       PORT: "8000"
 //!   api: npm run dev                     # short form: just the command
@@ -20,6 +21,10 @@ pub const Item = struct {
     cmd: []const u8,
     cwd: []const u8,
     restart: bool,
+    /// Run on a pseudo-terminal (the default). `false` hands the process a pipe
+    /// instead, so tools that redraw a screen when they see a terminal print
+    /// plain lines — which is what a log file can hold.
+    tty: bool,
     env: []const []const u8, // "KEY=value"
     deps: []const []const u8 = &.{}, // names this process waits for
     health: []const u8 = "", // readiness command ("" = none)
@@ -31,7 +36,7 @@ pub const Item = struct {
 /// `Invalid`: the file is wrong; `msg` explains why (already prefixed with the path).
 pub const Error = error{ Invalid, OutOfMemory };
 
-const allowed_keys = "cmd, cwd, restart, env, depends_on, health";
+const allowed_keys = "cmd, cwd, restart, tty, env, depends_on, health";
 
 fn fail(msg: *Buf, comptime f: []const u8, args: anytype) Error {
     msg.print(f, args);
@@ -115,7 +120,7 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
         // Short form: `name: command`
         if (v == .scalar) {
             if (v.scalar.len == 0) return fail(msg, "{s}: processes.{s}: empty command\n", .{ path, name });
-            try items.append(arena, .{ .name = name, .cmd = v.scalar, .cwd = base_dir, .restart = true, .env = &.{} });
+            try items.append(arena, .{ .name = name, .cmd = v.scalar, .cwd = base_dir, .restart = true, .tty = true, .env = &.{} });
             continue;
         }
 
@@ -126,8 +131,9 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
         while (kit.next()) |kv| {
             const k = kv.key_ptr.*;
             if (!(std.mem.eql(u8, k, "cmd") or std.mem.eql(u8, k, "cwd") or
-                std.mem.eql(u8, k, "restart") or std.mem.eql(u8, k, "env") or
-                std.mem.eql(u8, k, "depends_on") or std.mem.eql(u8, k, "health")))
+                std.mem.eql(u8, k, "restart") or std.mem.eql(u8, k, "tty") or
+                std.mem.eql(u8, k, "env") or std.mem.eql(u8, k, "depends_on") or
+                std.mem.eql(u8, k, "health")))
                 return fail(msg, "{s}: processes.{s}: unknown key `{s}` (allowed: " ++ allowed_keys ++ ")\n", .{ path, name, k });
         }
 
@@ -148,6 +154,12 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
         if (m.get("restart")) |r| {
             restart = parseBool(r) orelse
                 return fail(msg, "{s}: processes.{s}.restart must be true or false\n", .{ path, name });
+        }
+
+        var tty = true;
+        if (m.get("tty")) |v2| {
+            tty = parseBool(v2) orelse
+                return fail(msg, "{s}: processes.{s}.tty must be true or false\n", .{ path, name });
         }
 
         var env: std.ArrayList([]const u8) = .empty;
@@ -177,7 +189,7 @@ pub fn parse(arena: Allocator, source: []const u8, path: []const u8, base_dir: [
             }
         }
 
-        var item = Item{ .name = name, .cmd = cmd, .cwd = cwd, .restart = restart, .env = env.items, .deps = deps.items };
+        var item = Item{ .name = name, .cmd = cmd, .cwd = cwd, .restart = restart, .tty = tty, .env = env.items, .deps = deps.items };
         if (m.get("health")) |h| try parseHealth(&item, h, path, msg);
         try items.append(arena, item);
     }

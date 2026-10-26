@@ -7,7 +7,8 @@ supervisor (un démon + une CLI qui lui parle par socket Unix), en plus simple.
 - **Le démon se lance tout seul** à `zpawn up`.
 - **Les couleurs ne sont jamais tronquées** : chaque processus tourne dans un PTY,
   donc il croit écrire dans un terminal et garde ses couleurs. Les octets sont
-  stockés et renvoyés tels quels, sans filtrage ni réécriture.
+  stockés et renvoyés tels quels, sans filtrage ni réécriture. `tty: false` donne
+  un simple tuyau aux outils qui redessinent un écran dès qu'ils voient un terminal.
 - Redémarrage automatique avec backoff, arrêt propre (SIGTERM puis SIGKILL après 5 s,
   sur tout le groupe de processus), logs en mémoire et sur disque.
 
@@ -71,6 +72,7 @@ processes:
     cmd: sh ./worker.sh        # obligatoire
     cwd: ./jobs                # facultatif, relatif au fichier (défaut : son dossier)
     restart: false             # facultatif, défaut true
+    tty: false                 # facultatif, défaut true (voir plus bas)
     env:                       # facultatif, s'ajoute à l'environnement du client
       WORKER_NAME: billing
     # facultatif : attend ces processus (voir ci-dessous)
@@ -120,6 +122,30 @@ Entoure la commande de guillemets (`"…"` ou `'…'`) dès qu'elle contient `{`
 `#` ou `: `. Les blocs `|` et `>` ne sont pas gérés par le parseur. Les clés inconnues
 sont refusées avec un message qui indique la ligne.
 
+#### `tty: false`
+
+Par défaut le processus reçoit un pseudo-terminal, ce qui lui fait garder ses
+couleurs. Mais un outil qui détecte un terminal (`isatty`) passe souvent en mode
+plein écran : il repositionne le curseur, efface des lignes, redessine. Dans un
+terminal c'est joli ; dans `logs/<nom>.log`, qui n'est qu'un flux d'octets que
+l'on ajoute à la fin, le même affichage devient illisible — et volumineux
+(`process-compose` écrit ainsi ~45 Ko/min, soit la rotation de 10 Mo atteinte en
+quelques heures).
+
+`tty: false` lui donne un tuyau à la place : `isatty` répond non et l'outil
+imprime des lignes. À réserver aux processus concernés (TUI, barres de
+progression, spinners) ; les autres gardent leurs couleurs avec le défaut. Si un
+outil s'obstine, ajoute `env: { TERM: dumb }`.
+
+```yaml
+processes:
+  services:
+    cmd: "devenv processes up postgres"
+    tty: false
+```
+
+Changer `tty` relance le processus, puisque le choix se fait au démarrage.
+
 Le YAML est lu **par le client uniquement** (bibliothèque
 [zig-yaml](vendor/zig-yaml/README.md), copiée dans `vendor/`) : le démon ne l'embarque
 pas dans son fonctionnement et son empreinte mémoire ne change pas.
@@ -143,6 +169,9 @@ committer. Pour relire un log avec couleurs : `less -R .zpawn/logs/web.log`.
 - Les commandes sont exécutées par `/bin/sh -c`, avec l'environnement du client
   qui a fait `up` (PATH inclus).
 - Pas d'`attach` interactif (envoi de touches au processus) pour l'instant.
+- Les octets ne sont jamais réécrits : un processus qui envoie des séquences
+  d'écran alors qu'il tourne dans un PTY les retrouvera telles quelles dans son
+  log. C'est à cela que sert `tty: false`.
 - Après 6 plantages rapides d'affilée (< 3 s), un processus passe en `failed`
   jusqu'à un `restart` manuel.
 - Le préfixe `nom |` est ajouté à chaque ligne en mode « tous les processus » ;

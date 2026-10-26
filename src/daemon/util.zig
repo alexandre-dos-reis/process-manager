@@ -96,7 +96,7 @@ pub fn sameHealth(p: *const Proc, hs: HealthSpec) bool {
         p.health_timeout_ms == hs.timeout_ms and p.health_retries == hs.retries));
 }
 
-pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, env: []const []const u8, over: []const []const u8, deps: []const []const u8, hs: HealthSpec) *Proc {
+pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, rows: u16, autorestart: bool, tty: bool, env: []const []const u8, over: []const []const u8, deps: []const []const u8, hs: HealthSpec) *Proc {
     const p = gpa.create(Proc) catch @panic("oom");
     p.* = .{
         .name = gpa.dupe(u8, name) catch @panic("oom"),
@@ -105,6 +105,7 @@ pub fn newProc(name: []const u8, cmd: []const u8, cwd: []const u8, cols: u16, ro
         .cols = cols,
         .rows = rows,
         .autorestart = autorestart,
+        .tty = tty,
         .color = palette[state.color_counter % palette.len],
     };
     state.color_counter += 1;

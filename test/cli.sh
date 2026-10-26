@@ -126,4 +126,41 @@ check "services démarrés" '[ "$("$Z" ls | grep -c running)" = 2 ]'
 "$Z" down >/dev/null
 check "la commande attachée se termine d'elle-même" '! kill -0 "$UP" 2>/dev/null'
 
+echo "== tty: false et motif d'arrêt"
+T="$TMP/tty"
+mkdir -p "$T"
+watch "$T"
+cat > "$T/probe.sh" <<'EOS'
+if [ -t 1 ]; then echo TERMINAL; else echo TUYAU; fi
+sh -c 'while true; do sleep 60; done' &
+echo "petitfils $!"
+wait
+EOS
+cat > "$T/zpawn.yaml" <<'EOS'
+processes:
+  avec: "sh ./probe.sh"
+  sans:
+    cmd: "sh ./probe.sh"
+    tty: false
+EOS
+(cd "$T" && "$Z" up -d >/dev/null 2>&1)
+cd "$T" || exit 2
+check "par défaut : le service voit un terminal" 'grep -q TERMINAL .zpawn/logs/avec.log'
+check "tty: false : le service voit un tuyau" 'grep -q TUYAU .zpawn/logs/sans.log'
+now "tty: false : les notes du log n'ont pas de \\r" '! grep -q "$(printf "zpawn\\] started.*\\r")" .zpawn/logs/sans.log'
+GK=$(sed -n 's/.*petitfils \([0-9]*\).*/\1/p' .zpawn/logs/sans.log | head -1)
+now "tty: false : le petit-fils tourne" '[ -n "$GK" ] && kill -0 "$GK" 2>/dev/null'
+"$Z" kill sans >/dev/null
+check "tty: false : le groupe entier est tué" '! kill -0 "$GK" 2>/dev/null'
+# Changer tty rebascule entre forkpty et pipe : seul un redémarrage l'applique,
+# et cela ne se voit que sur un service en cours.
+"$Z" restart sans >/dev/null
+check "le service est relancé" '[ "$(state_of sans)" = running ]'
+printf 'processes:\n  avec: "sh ./probe.sh"\n  sans:\n    cmd: "sh ./probe.sh"\n    tty: true\n' > zpawn.yaml
+now "changer tty redémarre le service" '"$Z" up -d | grep -q "sans .*definition changed"'
+now "tty inchangé : unchanged" '"$Z" up -d | grep -q "avec .*unchanged"'
+now "tty invalide : message clair" 'printf "processes:\n  x:\n    cmd: ls\n    tty: peutetre\n" > bad.yaml; "$Z" up -d -f bad.yaml 2>&1 | grep -q "tty must be true or false"'
+"$Z" down >/dev/null 2>&1
+cd "$P" || exit 2
+
 summary

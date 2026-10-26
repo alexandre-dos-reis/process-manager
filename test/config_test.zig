@@ -57,10 +57,11 @@ test "declaration order is preserved" {
     try t.expectEqualStrings("mid", p.items[2].name);
 }
 
-test "defaults: restart on, cwd is the config directory, no env" {
+test "defaults: restart on, tty on, cwd is the config directory, no env" {
     var p = try ok("processes:\n  web: sleep 1\n");
     defer p.deinit();
     try t.expect(p.items[0].restart);
+    try t.expect(p.items[0].tty);
     try t.expectEqualStrings("/", p.items[0].cwd);
     try t.expectEqual(@as(usize, 0), p.items[0].env.len);
 }
@@ -280,4 +281,15 @@ test "health: bad numbers" {
 test "health: unknown key and missing cmd" {
     try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      cmd: ls\n      every: 2\n", "unknown key `every`");
     try rejects("processes:\n  a:\n    cmd: ls\n    health:\n      interval: 2\n", "missing `cmd:`");
+}
+
+test "tty: false asks for a pipe instead of a pseudo-terminal" {
+    var p = try ok("processes:\n  web:\n    cmd: ls\n    tty: false\n  api:\n    cmd: ls\n    tty: true\n");
+    defer p.deinit();
+    try t.expect(!p.items[0].tty);
+    try t.expect(p.items[1].tty);
+}
+
+test "tty must be a boolean" {
+    try rejects("processes:\n  web:\n    cmd: ls\n    tty: nope\n", "tty must be true or false");
 }

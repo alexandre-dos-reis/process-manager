@@ -169,14 +169,20 @@ Rien n'est libéré en plein milieu d'un tour : les suppressions sont marquées
 
 Chaque processus (`Proc`) est lancé avec **`forkpty`** : il reçoit un pseudo-terminal
 comme stdin/stdout/stderr et devient chef de sa propre session et de son groupe.
+Déclaré **`tty: false`**, il est lancé par `fork` + `pipe` : le démon fait alors
+lui-même ce que `forkpty` faisait pour lui (`setsid`, stdin sur `/dev/null`, stdout
+et stderr dans le tuyau), si bien que `kill(-pid)` porte toujours sur tout le groupe.
+Le reste de la machinerie — `poll`, lecture, `ring`, log — ne voit aucune différence :
+dans les deux cas le démon tient un descripteur en lecture (`p.master`).
 Il tourne via `/bin/sh -c "<commande>"` (les pipes, `&&` et variables marchent),
 sauf qu'une commande **simple** (`node server.js`, sans guillemets, `$`, pipe ni
 affectation) est lancée avec `exec` : le processus remplace le shell, reçoit donc les
 signaux directement, et ses dernières lignes ne se perdent pas si un shell intermédiaire
 mourait avant lui (c'est ce que l'exemple `examples/node` a révélé),
 dans le `cwd` demandé, avec l'**environnement du client** qui a fait `up`
-(PATH inclus). `TERM` vaut `xterm-256color` s'il manque ou vaut `dumb`. La taille du
-PTY est celle du terminal du client au moment du `up`.
+(PATH inclus). Avec un PTY, `TERM` vaut `xterm-256color` s'il manque ou vaut `dumb`,
+et la taille du PTY est celle du terminal du client au moment du `up` ; sans PTY,
+`TERM` est transmis tel quel et aucune taille n'a de sens.
 
 États : `running`, `stopped`, `exited`, `backoff` (attente avant relance), `failed`,
 `waiting` (attend ses `depends_on`).
@@ -191,7 +197,9 @@ PTY est celle du terminal du client au moment du `up`.
 - **`restart`** : arrêt, puis redémarrage quand la sortie est constatée
   (`restart_pending`). **`rm`** : arrêt, puis suppression au `sweep`.
 - Chaque événement (démarrage, sortie, relance…) est écrit dans le flux du processus
-  sous la forme d'une ligne grisée `[zpawn] …`, donc visible dans `logs`.
+  sous la forme d'une ligne grisée `[zpawn] …`, donc visible dans `logs`. Elle se
+  termine par `\r\n` sur un PTY et par `\n` sur un tuyau, où un `\r` ne serait
+  qu'un `^M` dans le fichier.
 
 ## Sortie et couleurs
 

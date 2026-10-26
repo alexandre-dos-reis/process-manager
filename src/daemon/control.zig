@@ -80,13 +80,14 @@ pub fn isOverridden(p: *Proc, e: []const u8) bool {
 }
 
 /// The environment a process (and its health check) runs with: the client's, overridden
-/// by the YAML `env:`, with a TERM that allows colors. Ends with the null terminator.
+/// by the YAML `env:`, with a TERM that allows colors when there is a PTY to use them
+/// on. Ends with the null terminator.
 pub fn buildEnvp(p: *Proc, envp: *std.ArrayList(?[*:0]const u8)) void {
     var has_term = false;
     for (p.env.items) |e| {
         if (isOverridden(p, e)) continue;
         if (std.mem.startsWith(u8, e, "TERM=")) {
-            if (std.mem.eql(u8, e, "TERM=dumb")) continue;
+            if (p.tty and std.mem.eql(u8, e, "TERM=dumb")) continue;
             has_term = true;
         }
         envp.append(gpa, e.ptr) catch @panic("oom");
@@ -95,14 +96,16 @@ pub fn buildEnvp(p: *Proc, envp: *std.ArrayList(?[*:0]const u8)) void {
         if (std.mem.startsWith(u8, e, "TERM=")) has_term = true;
         envp.append(gpa, e.ptr) catch @panic("oom");
     }
-    if (!has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
+    // Without a PTY, TERM is passed through untouched: picking a value would only
+    // be a guess about a terminal that is not there.
+    if (p.tty and !has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
     envp.append(gpa, null) catch @panic("oom");
 }
 
 pub fn startProc(p: *Proc) void {
     openLog(p);
 
-    // Build environment before forking: TERM must allow colors.
+    // Build environment before forking: with a PTY, TERM must allow colors.
     var envp: std.ArrayList(?[*:0]const u8) = .empty;
     defer envp.deinit(gpa);
     buildEnvp(p, &envp);
@@ -112,12 +115,34 @@ pub fn startProc(p: *Proc) void {
     const sh_cmd: [:0]u8 = if (isPlainCommand(p.cmd)) common.joinZ(&.{ "exec ", p.cmd }) else common.dupeZ(p.cmd);
     defer gpa.free(sh_cmd);
 
-    var ws = sys.Winsize{ .row = p.rows, .col = p.cols };
     var master: c_int = -1;
-    const pid = sys.forkpty(&master, null, null, &ws);
+    var pfd: [2]c_int = .{ -1, -1 };
+    var pid: c_int = -1;
+    if (p.tty) {
+        var ws = sys.Winsize{ .row = p.rows, .col = p.cols };
+        pid = sys.forkpty(&master, null, null, &ws);
+    } else {
+        // `tty: false`: one pipe for stdout and stderr. A program that asks
+        // isatty() now sees a pipe and prints lines instead of redrawing a
+        // screen — which is the only thing a log file can hold.
+        if (sys.pipe(&pfd) != 0) {
+            p.state = .failed;
+            note(p, "could not start: pipe failed", .{});
+            return;
+        }
+        pid = sys.fork();
+        if (pid > 0) {
+            _ = sys.close(pfd[1]);
+            master = pfd[0];
+        }
+    }
     if (pid < 0) {
+        if (pfd[0] >= 0) {
+            _ = sys.close(pfd[0]);
+            _ = sys.close(pfd[1]);
+        }
         p.state = .failed;
-        note(p, "could not start: forkpty failed", .{});
+        note(p, "could not start: {s} failed", .{if (p.tty) "forkpty" else "fork"});
         return;
     }
     if (pid == 0) {
@@ -125,6 +150,21 @@ pub fn startProc(p: *Proc) void {
         _ = sys.signal(sys.SIGPIPE, sys.SIG_DFL);
         _ = sys.signal(sys.SIGTERM, sys.SIG_DFL);
         _ = sys.signal(sys.SIGINT, sys.SIG_DFL);
+        if (!p.tty) {
+            // What forkpty does for the PTY case, by hand: a new session — so the
+            // child leads its own group and `kill(-pid)` still reaches everything
+            // it spawns — stdin on /dev/null, stdout and stderr in the pipe.
+            _ = sys.setsid();
+            _ = sys.close(pfd[0]);
+            const nul = sys.open("/dev/null", sys.O_RDONLY);
+            if (nul >= 0) {
+                _ = sys.dup2(nul, 0);
+                if (nul > 2) _ = sys.close(nul);
+            }
+            _ = sys.dup2(pfd[1], 1);
+            _ = sys.dup2(pfd[1], 2);
+            if (pfd[1] > 2) _ = sys.close(pfd[1]);
+        }
         if (p.cwd.len > 0 and sys.chdir(p.cwd.ptr) != 0) {
             const msg = "zpawn: cannot enter working directory\n";
             _ = sys.write(2, msg, msg.len);

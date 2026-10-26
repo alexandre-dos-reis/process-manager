@@ -47,6 +47,7 @@ pub const Proc = struct {
     cols: u16,
     rows: u16,
     autorestart: bool,
+    tty: bool,
     color: u8,
 
     state: State = .stopped,
