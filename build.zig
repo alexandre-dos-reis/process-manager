@@ -50,22 +50,24 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // `zig build test`: unit tests live in test/, never inline in src/.
-    const config_mod = b.createModule(.{
-        .root_source_file = b.path("src/config.zig"),
+    const core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core.zig"),
         .target = target,
         .optimize = .debug,
         .link_libc = true,
         .imports = &.{.{ .name = "yaml", .module = yaml }},
     });
-    const unit = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/config_test.zig"),
-            .target = target,
-            .optimize = .debug,
-            .link_libc = true,
-            .imports = &.{.{ .name = "config", .module = config_mod }},
-        }),
-    });
     const test_step = b.step("test", "Run the unit tests (test/*_test.zig)");
-    test_step.dependOn(&b.addRunArtifact(unit).step);
+    for ([_][]const u8{ "config_test", "fmt_test", "ring_test" }) |name| {
+        const unit = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("test/{s}.zig", .{name})),
+                .target = target,
+                .optimize = .debug,
+                .link_libc = true,
+                .imports = &.{.{ .name = "core", .module = core_mod }},
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(unit).step);
+    }
 }

@@ -1,6 +1,6 @@
 //! Unit tests for the zpawn.yaml loader. Run with `zig build test`.
 const std = @import("std");
-const config = @import("config");
+const config = @import("core").config;
 const Buf = config.Buf;
 
 const t = std.testing;
