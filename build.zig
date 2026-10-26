@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     // Linux: static musl binary by default (smaller resident memory, no libc to load).
@@ -28,6 +29,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", zon.version);
+
     const exe = b.addExecutable(.{
         .name = "zpawn",
         .root_module = b.createModule(.{
@@ -39,6 +43,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "yaml", .module = yaml },
                 .{ .name = "clap", .module = clap },
+                .{ .name = "build_options", .module = options.createModule() },
             },
         }),
     });

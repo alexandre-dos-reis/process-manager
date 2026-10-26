@@ -1,0 +1,16 @@
+.{
+    .name = .zpawn,
+    .fingerprint = 0x9d1ead96c458162d, // never change this once published
+    // The one place the version lives: release-please bumps this line, build.zig reads it
+    // and `zpawn --version` prints it.
+    .version = "0.1.0", // x-release-please-version
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "vendor",
+        "README.md",
+    },
+}

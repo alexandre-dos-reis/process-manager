@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "6011ebd78d3581b9ad084dae2f0f53197cac5e6f",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "zpawn",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "extra-files": ["build.zig.zon"]
+    }
+  }
+}

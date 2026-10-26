@@ -7,6 +7,7 @@ Aucun test n'est écrit dans `src/` : tout est ici.
 | `config_test.zig` | Tests unitaires du chargeur `zpawn.yaml` (forme courte/longue, `cwd`, `env`, `restart`, ordre, guillemets, erreurs et leurs messages) | `zig build test` |
 | `cli.sh` | Chaque commande de bout en bout : `init`, `up`, `up -d`, `up` attaché + Ctrl-C, `down`, `kill`, `restart`, `logs`, `ls`, codes de sortie et messages d'erreur | `test/cli.sh` |
 | `examples.sh` | Les scénarios de `examples/` : 3 processus, couleurs intactes, restauration après préfixe, pannes et relances (`FULL=1` ajoute le SIGKILL) | `test/examples.sh` |
+| `commit_messages.sh` | Le vérificateur Conventional Commits (`scripts/check-commit-message.sh`) : messages acceptés et refusés | `test/commit_messages.sh` |
 | `lib.sh` | Fonctions partagées par les scripts (`check`, `now`, nettoyage des démons) | (sourcé) |
 | `run.sh` | Tout, dans l'ordre : build, unitaires, CLI, exemples | `test/run.sh` |
 

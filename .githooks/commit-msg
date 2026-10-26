@@ -1,0 +1,3 @@
+#!/bin/sh
+# Activé par : git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/check-commit-message.sh" -f "$1"

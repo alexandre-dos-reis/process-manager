@@ -116,3 +116,7 @@ committer. Pour relire un log avec couleurs : `less -R .zpawn/logs/web.log`.
 test/run.sh                  # build + tests unitaires + CLI + exemples
 zig build test               # tests unitaires seulement (test/config_test.zig)
 ```
+
+## Contribuer et releases
+
+Commits en [Conventional Commits](CONTRIBUTING.md), releases automatiques par release-please : voir [CONTRIBUTING.md](CONTRIBUTING.md).

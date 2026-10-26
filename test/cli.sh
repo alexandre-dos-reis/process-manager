@@ -12,7 +12,7 @@ watch "$P"
 cd "$P" || exit 2
 
 echo "== aide et erreurs d'usage"
-now "--version" '"$Z" --version | grep -q "^zpawn "'
+now "--version vient de build.zig.zon" '[ "$("$Z" --version)" = "zpawn $(sed -n "s/.*\.version = \"\([^\"]*\)\".*/\1/p" "$ROOT/build.zig.zon")" ]'
 now "-h liste les commandes" '"$Z" -h | grep -q "kill" && "$Z" -h | grep -q "up \[-d\]"'
 now "la commande add n'existe plus" '! "$Z" -h | grep -q " add "'
 "$Z" bogus >/dev/null 2>&1; rc=$?

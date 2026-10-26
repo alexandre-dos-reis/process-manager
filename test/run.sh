@@ -14,6 +14,8 @@ echo "######## build"
 $ZIG build || exit 1
 echo "######## tests unitaires (test/config_test.zig)"
 $ZIG build test --summary all || rc=1
+echo "######## messages de commit (test/commit_messages.sh)"
+sh test/commit_messages.sh || rc=1
 echo "######## tests CLI (test/cli.sh)"
 sh test/cli.sh || rc=1
 echo "######## exemples (test/examples.sh)"
