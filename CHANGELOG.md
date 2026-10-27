@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/alexandre-dos-reis/zpawn/compare/v0.1.0...v0.2.0) (2026-10-27)
+
+
+### Features
+
+* **config:** add `tty: false` to run a process on a pipe instead of a PTY ([ddf9d5c](https://github.com/alexandre-dos-reis/zpawn/commit/ddf9d5c7b9057608b76bef46cf84e14ab5afce4f))
+* **config:** add `tty: false` to run a process on a pipe instead of a PTY ([544c5d7](https://github.com/alexandre-dos-reis/zpawn/commit/544c5d73befd3358981282ba8ee73ae041cc7b59))
+
+
+### Bug Fixes
+
+* **logs:** say how a process ended when the stop was deliberate ([eb69320](https://github.com/alexandre-dos-reis/zpawn/commit/eb69320b98e5323970932fe7a25a5aea7636c3b5))
+
 ## [0.1.0](https://github.com/alexandre-dos-reis/zpawn/releases/tag/v0.1.0) (2026-10-26)
 
 
