@@ -235,6 +235,7 @@ fn addItems(home: [:0]const u8, color: bool, replace: bool, items: []const confi
         req.str(it.cmd);
         req.str(it.cwd);
         req.str(if (it.restart) "1" else "0");
+        req.str(if (it.tty) "1" else "0");
         req.num(it.env.len);
         for (it.env) |e| req.str(e);
         req.num(it.deps.len);
@@ -453,6 +454,7 @@ const init_template =
     \\    cmd: "while true; do echo working; sleep 2; done"
     \\    # cwd: ./jobs          # relative to this file
     \\    # restart: false       # default: restart after a crash
+    \\    # tty: false           # default: true; false for tools that redraw a screen
     \\    # env:
     \\    #   LOG_LEVEL: debug
     \\

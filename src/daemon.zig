@@ -1,5 +1,6 @@
-//! zpawn daemon: owns the processes (each on its own PTY), keeps a ring buffer
-//! of raw output per process and serves clients over a Unix socket.
+//! zpawn daemon: owns the processes (each on its own PTY, or on a plain pipe
+//! when it is declared `tty: false`), keeps a ring buffer of raw output per
+//! process and serves clients over a Unix socket.
 //!
 //! Output is never rewritten: bytes coming from the PTY are stored and forwarded
 //! untouched, so colors and escape sequences survive. The only thing ever

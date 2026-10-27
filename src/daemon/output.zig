@@ -103,8 +103,12 @@ pub fn emit(p: *Proc, bytes: []const u8) void {
 pub fn note(p: *Proc, comptime f: []const u8, args: anytype) void {
     var m = Buf{};
     defer m.deinit();
-    if (p.last_byte != '\n' and p.last_byte != '\r') m.append("\r\n");
-    m.print(RESET ++ DIM ++ "[zpawn] " ++ f ++ RESET ++ "\r\n", args);
+    // A PTY needs the carriage return to get back to column one; a pipe goes
+    // straight into a log file, where the same \r only shows up as ^M.
+    const eol: []const u8 = if (p.tty) "\r\n" else "\n";
+    if (p.last_byte != '\n' and p.last_byte != '\r') m.append(eol);
+    m.print(RESET ++ DIM ++ "[zpawn] " ++ f ++ RESET, args);
+    m.append(eol);
     emit(p, m.slice());
 }
 

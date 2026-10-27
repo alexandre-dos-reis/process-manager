@@ -80,13 +80,14 @@ pub fn isOverridden(p: *Proc, e: []const u8) bool {
 }
 
 /// The environment a process (and its health check) runs with: the client's, overridden
-/// by the YAML `env:`, with a TERM that allows colors. Ends with the null terminator.
+/// by the YAML `env:`, with a TERM that allows colors when there is a PTY to use them
+/// on. Ends with the null terminator.
 pub fn buildEnvp(p: *Proc, envp: *std.ArrayList(?[*:0]const u8)) void {
     var has_term = false;
     for (p.env.items) |e| {
         if (isOverridden(p, e)) continue;
         if (std.mem.startsWith(u8, e, "TERM=")) {
-            if (std.mem.eql(u8, e, "TERM=dumb")) continue;
+            if (p.tty and std.mem.eql(u8, e, "TERM=dumb")) continue;
             has_term = true;
         }
         envp.append(gpa, e.ptr) catch @panic("oom");
@@ -95,14 +96,16 @@ pub fn buildEnvp(p: *Proc, envp: *std.ArrayList(?[*:0]const u8)) void {
         if (std.mem.startsWith(u8, e, "TERM=")) has_term = true;
         envp.append(gpa, e.ptr) catch @panic("oom");
     }
-    if (!has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
+    // Without a PTY, TERM is passed through untouched: picking a value would only
+    // be a guess about a terminal that is not there.
+    if (p.tty and !has_term) envp.append(gpa, "TERM=xterm-256color") catch @panic("oom");
     envp.append(gpa, null) catch @panic("oom");
 }
 
 pub fn startProc(p: *Proc) void {
     openLog(p);
 
-    // Build environment before forking: TERM must allow colors.
+    // Build environment before forking: with a PTY, TERM must allow colors.
     var envp: std.ArrayList(?[*:0]const u8) = .empty;
     defer envp.deinit(gpa);
     buildEnvp(p, &envp);
@@ -112,12 +115,34 @@ pub fn startProc(p: *Proc) void {
     const sh_cmd: [:0]u8 = if (isPlainCommand(p.cmd)) common.joinZ(&.{ "exec ", p.cmd }) else common.dupeZ(p.cmd);
     defer gpa.free(sh_cmd);
 
-    var ws = sys.Winsize{ .row = p.rows, .col = p.cols };
     var master: c_int = -1;
-    const pid = sys.forkpty(&master, null, null, &ws);
+    var pfd: [2]c_int = .{ -1, -1 };
+    var pid: c_int = -1;
+    if (p.tty) {
+        var ws = sys.Winsize{ .row = p.rows, .col = p.cols };
+        pid = sys.forkpty(&master, null, null, &ws);
+    } else {
+        // `tty: false`: one pipe for stdout and stderr. A program that asks
+        // isatty() now sees a pipe and prints lines instead of redrawing a
+        // screen — which is the only thing a log file can hold.
+        if (sys.pipe(&pfd) != 0) {
+            p.state = .failed;
+            note(p, "could not start: pipe failed", .{});
+            return;
+        }
+        pid = sys.fork();
+        if (pid > 0) {
+            _ = sys.close(pfd[1]);
+            master = pfd[0];
+        }
+    }
     if (pid < 0) {
+        if (pfd[0] >= 0) {
+            _ = sys.close(pfd[0]);
+            _ = sys.close(pfd[1]);
+        }
         p.state = .failed;
-        note(p, "could not start: forkpty failed", .{});
+        note(p, "could not start: {s} failed", .{if (p.tty) "forkpty" else "fork"});
         return;
     }
     if (pid == 0) {
@@ -125,6 +150,21 @@ pub fn startProc(p: *Proc) void {
         _ = sys.signal(sys.SIGPIPE, sys.SIG_DFL);
         _ = sys.signal(sys.SIGTERM, sys.SIG_DFL);
         _ = sys.signal(sys.SIGINT, sys.SIG_DFL);
+        if (!p.tty) {
+            // What forkpty does for the PTY case, by hand: a new session — so the
+            // child leads its own group and `kill(-pid)` still reaches everything
+            // it spawns — stdin on /dev/null, stdout and stderr in the pipe.
+            _ = sys.setsid();
+            _ = sys.close(pfd[0]);
+            const nul = sys.open("/dev/null", sys.O_RDONLY);
+            if (nul >= 0) {
+                _ = sys.dup2(nul, 0);
+                if (nul > 2) _ = sys.close(nul);
+            }
+            _ = sys.dup2(pfd[1], 1);
+            _ = sys.dup2(pfd[1], 2);
+            if (pfd[1] > 2) _ = sys.close(pfd[1]);
+        }
         if (p.cwd.len > 0 and sys.chdir(p.cwd.ptr) != 0) {
             const msg = "zpawn: cannot enter working directory\n";
             _ = sys.write(2, msg, msg.len);
@@ -223,6 +263,31 @@ pub fn stopProc(p: *Proc) void {
     }
 }
 
+/// The signals worth naming in a log; anything else stays a number.
+fn signalName(sig: i32) ?[]const u8 {
+    return switch (sig) {
+        sys.SIGHUP => "SIGHUP",
+        sys.SIGINT => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        sys.SIGKILL => "SIGKILL",
+        11 => "SIGSEGV",
+        sys.SIGPIPE => "SIGPIPE",
+        sys.SIGTERM => "SIGTERM",
+        else => null,
+    };
+}
+
+/// How the process ended, in words: "SIGTERM", "signal 31" or "exit code 1".
+/// Writes into `buf` and returns the part used, so it needs no allocation.
+fn exitStatus(p: *const Proc, buf: []u8) []const u8 {
+    if (p.exit_signal != 0) {
+        if (signalName(p.exit_signal)) |n| return n;
+        return std.fmt.bufPrint(buf, "signal {d}", .{p.exit_signal}) catch "signal ?";
+    }
+    return std.fmt.bufPrint(buf, "exit code {d}", .{p.exit_code}) catch "exit code ?";
+}
+
 pub fn onExit(p: *Proc, status: c_int, now: i64) void {
     health.killCheck(p);
     // Drain what is left, then close the PTY.
@@ -246,7 +311,11 @@ pub fn onExit(p: *Proc, status: c_int, now: i64) void {
     if (p.stopping) {
         p.stopping = false;
         p.state = .stopped;
-        note(p, "stopped", .{});
+        // Say how it ended even though we asked for it: a stop that needed
+        // SIGKILL, or a non-zero code on the way out, is exactly what you want
+        // to find in the log afterwards.
+        var buf: [32]u8 = undefined;
+        note(p, "stopped ({s})", .{exitStatus(p, &buf)});
         if (p.restart_pending) {
             p.restart_pending = false;
             launch(p);
@@ -255,7 +324,8 @@ pub fn onExit(p: *Proc, status: c_int, now: i64) void {
     }
 
     if (p.exit_signal != 0) {
-        note(p, "killed by signal {d}", .{p.exit_signal});
+        var buf: [32]u8 = undefined;
+        note(p, "killed by {s}", .{exitStatus(p, &buf)});
     } else {
         note(p, "exited with code {d}", .{p.exit_code});
     }
